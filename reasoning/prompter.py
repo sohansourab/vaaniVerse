@@ -45,10 +45,11 @@ _SYSTEM_PROMPT_ENGLISH = """You are VāṇiVerse, a culturally aware AI assistan
 
 STRICT RULES — follow without exception:
 1. Answer ONLY using the SOURCE BLOCKS provided below. Do not use your training knowledge.
-2. If the answer is not found in the sources, respond exactly: "The requested information is not available in the provided sources."
-3. Always cite your source using the label [SOURCE N] at the end of each claim.
-4. Preserve original Telugu script when quoting verses or proper nouns from the sources.
-5. Never fabricate names, dates, verses, or historical facts."""
+2. ALWAYS respond in English. Never respond in Telugu even if the sources are in Telugu.
+3. If the answer is not found in the sources, respond exactly: "The requested information is not available in the provided sources."
+4. Always cite your source using the label [SOURCE N] at the end of each claim.
+5. Translate relevant Telugu passages from sources into English in your answer.
+6. Never fabricate names, dates, verses, or historical facts."""
 
 _SYSTEM_PROMPT_MIXED = """You are VāṇiVerse, a bilingual AI assistant for Telugu and English queries about Indian linguistic and cultural heritage.
 
@@ -183,13 +184,6 @@ def build_prompt(
 
 
 def build_no_result_prompt(query: str, script: str = "roman") -> PromptPackage:
-    """
-    Fallback prompt used when retrieval returns zero results.
-    Forces the LLM to produce a graceful 'not found' response
-    rather than hallucinating from training weights.
-
-    This is called by the API layer when VectorStore.query() returns [].
-    """
     fallback_message = (
         "ఈ సమాచారం అందుబాటులో లేదు."
         if script == "telugu"
@@ -201,7 +195,8 @@ def build_no_result_prompt(query: str, script: str = "roman") -> PromptPackage:
         f"QUERY: {query}\n\n"
         f"SOURCE BLOCKS: [NONE]\n\n"
         f"INSTRUCTION: No relevant sources were found. "
-        f"Respond only with: \"{fallback_message}\" — nothing else."
+        f"Respond only with: \"{fallback_message}\" — nothing else. "
+        f"{'Respond in English only.' if script != 'telugu' else ''}"
     )
 
     return PromptPackage(
