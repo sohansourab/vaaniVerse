@@ -1,4 +1,11 @@
-# VāṇiVerse 🏛️
+<div align="center">
+
+<img src="https://github.com/sohansourab/vaaniVerse/blob/main/logo.png?raw=true" width="500" alt="VaaniVerse logo" />
+
+<br/>
+
+</div>
+
 ### Reimagining Cultural Knowledge Retrieval for India's Linguistic Diversity
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)](https://python.org)
