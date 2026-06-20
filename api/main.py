@@ -171,12 +171,20 @@ def _get_generator() -> Generator:
 
 def _normalize_query(query: str) -> tuple[str, str]:
     """
-    Normalizes a raw query and detects its script.
-    Returns (normalized_query, script).
-    script ∈ {"telugu", "roman", "mixed", "unknown"}
+    Normalize a raw query and detect its script.
+
+    Script is detected on the RAW query before normalization, then used
+    to decide whether transliteration should run at all. This prevents
+    genuine English queries ("who am i", "what is dharma") from being
+    routed through the Romanized-Telugu transliterator, which would
+    otherwise mangle them into garbage before embedding.
+
+    Returns:
+        (normalized_query, script) where script ∈
+        {"telugu", "roman", "mixed", "unknown"}.
     """
+    script = detect_script(query)
     normalized = normalize(query, transliterate=True)
-    script     = detect_script(normalized)
     return normalized, script
 
 
