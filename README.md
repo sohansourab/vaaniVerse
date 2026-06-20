@@ -81,8 +81,9 @@ VāṇiVerse aims to bridge this gap by creating an AI-powered cultural knowledg
 ### Flexible AI Backends
 
 * Groq-powered online inference
-* Ollama-powered local inference
-* Swappable embedding and vector storage layers
+* Ollama-powered local inference (offline fallback)
+* FAISS-backed vector retrieval (default, fully tested)
+* Qdrant backend implemented for production scale-out — integration testing in progress
 
 ### Production-Ready API
 
@@ -111,7 +112,7 @@ Chunker
 BGE-M3 Embeddings
    │
    ▼
-FAISS / Qdrant
+FAISS (active backend)
    │
    ▼
 Retriever
@@ -169,7 +170,7 @@ vaniverse/
 | API Framework       | FastAPI                          |
 | Frontend            | Streamlit                        |
 | Embeddings          | BAAI BGE-M3                      |
-| Vector Database     | FAISS / Qdrant                   |
+| Vector Database     | FAISS (active) · Qdrant (implemented, untested)|
 | Document Processing | PyMuPDF                          |
 | NLP                 | spaCy + Custom Telugu Processing |
 | Online LLM          | Groq                             |
@@ -239,13 +240,13 @@ All query types pass through a unified multilingual retrieval workflow while pre
 
 ## Roadmap
 
-### Phase 1 — Foundation
+### Phase 1 — Foundation ✅ Complete
 
-* Multilingual RAG pipeline
-* Telugu-aware retrieval
-* FastAPI backend
+* Multilingual RAG pipeline (Telugu, Romanized Telugu, English)
+* FastAPI backend with full REST API
 * Streamlit interface
-* FAISS and Qdrant support
+* FAISS vector retrieval
+* Pre-commit quality gates: ruff, mypy, pytest
 
 ### Phase 2 — Robustness
 
