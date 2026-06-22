@@ -20,7 +20,7 @@
 
 ### Reimagining Cultural Knowledge Retrieval for India's Linguistic Diversity
 
-VāṇiVerse is an open-source multilingual Retrieval-Augmented Generation (RAG) platform designed to preserve, explore, and interact with India's vast linguistic and cultural knowledge through Artificial Intelligence.
+VāṇiVerse is an open-source multilingual Retrieval-Augmented Generation (RAG) , platform designed to preserve, explore, and interact with India's vast linguistic and cultural knowledge through Artificial Intelligence.
 
 Modern AI systems perform exceptionally well on globally digitized content but struggle with regional languages, transliterated text, historical documents, manuscripts, and culturally specific knowledge sources. VāṇiVerse addresses this challenge by combining multilingual retrieval, document intelligence, semantic search, and culturally-aware AI reasoning into a unified knowledge platform.
 
