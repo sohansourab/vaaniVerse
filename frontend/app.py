@@ -1,9 +1,19 @@
 import json
-import streamlit as st
-import requests
+import os
+import sys
+import threading
+import time
+from pathlib import Path
 
-# ── Configuration ──────────────────────────────────────────────────────────────
-API_BASE_URL = "http://localhost:8000"
+import requests
+import streamlit as st
+
+# ── Path bootstrap ─────────────────────────────────────────────────────────────
+# Streamlit Cloud runs this file from frontend/, so put the repo root on sys.path
+# before we try to launch the bundled FastAPI app (see start_embedded_api).
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 st.set_page_config(
     page_title="VāṇiVerse",
@@ -11,6 +21,24 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ── Configuration ──────────────────────────────────────────────────────────────
+# Default to a backend on localhost. Override with the VANIVERSE_API_URL env var
+# or an API_BASE_URL Streamlit secret to point at an externally hosted API.
+#
+# Flat secrets are also bridged into os.environ because core/config.py reads its
+# configuration (GROQ_API_KEY, LLM_PROVIDER, …) from the environment at import
+# time — i.e. before the embedded API is imported further down.
+LOCAL_API_URL = "http://localhost:8000"
+API_BASE_URL  = os.getenv("VANIVERSE_API_URL", LOCAL_API_URL)
+try:  # st.secrets raises when no secrets.toml is configured
+    for _key, _val in st.secrets.items():
+        if isinstance(_val, str) and _key not in os.environ:
+            os.environ[_key] = _val
+    if "API_BASE_URL" in st.secrets:
+        API_BASE_URL = st.secrets["API_BASE_URL"]
+except Exception:
+    pass
 
 # ── Design tokens & global style ────────────────────────────────────────────────
 st.markdown("""
@@ -219,6 +247,64 @@ def get_health() -> dict | None:
         return None
 
 
+# ── Embedded API bootstrap ─────────────────────────────────────────────────────
+# Streamlit Community Cloud provides a single process — the Streamlit server — so
+# nothing is listening on localhost:8000 and every API call above fails. This
+# starts api.main:app (uvicorn) on a daemon thread inside that same process, so
+# the UI works standalone with no second host.
+
+def api_is_up(timeout: float = 2.0) -> bool:
+    """True when something answers /health at API_BASE_URL."""
+    try:
+        return requests.get(f"{API_BASE_URL}/health", timeout=timeout).status_code == 200
+    except Exception:
+        return False
+
+
+@st.cache_resource(show_spinner=False)
+def start_embedded_api() -> tuple[bool, str]:
+    """Launch uvicorn on 127.0.0.1:8000 in a background thread; wait until ready."""
+    try:
+        import uvicorn
+        from api.main import app as api_app
+    except Exception as exc:
+        return False, f"could not import the API: {exc}"
+
+    server = uvicorn.Server(
+        uvicorn.Config(
+            api_app,
+            host       = "127.0.0.1",
+            port       = 8000,
+            log_level  = "info",
+            access_log = False,
+        )
+    )
+    threading.Thread(target=server.run, daemon=True, name="vaaniverse-api").start()
+
+    for _ in range(180):  # up to ~3 minutes
+        if api_is_up(timeout=1.0):
+            return True, "started"
+        time.sleep(1)
+    return False, "the API did not become ready in time"
+
+
+@st.cache_resource(show_spinner=False)
+def ensure_api() -> tuple[bool, str]:
+    """(ready, detail). Starts the embedded API only when nothing else answers."""
+    if api_is_up():
+        return True, "external"
+    return start_embedded_api()
+
+
+def ensure_api_ready() -> bool:
+    """UI-facing wrapper — shows a spinner while a cold start happens."""
+    if api_is_up():
+        return True
+    with st.spinner("Starting the VāṇiVerse engine…"):
+        ready, _detail = ensure_api()
+    return ready
+
+
 def score_color(score: float) -> str:
     if score >= 0.65:
         return "var(--banyan)"
@@ -278,7 +364,7 @@ def query_api(
         resp = requests.post(
             f"{API_BASE_URL}/query",
             json    = payload,
-            timeout = 60,
+            timeout = 300,  # first call may load BGE-M3 — slow on CPU
         )
         return resp.json()
     except requests.exceptions.ConnectionError:
@@ -288,7 +374,7 @@ def query_api(
 def ingest_file(file) -> dict | None:
     try:
         files = {"file": (file.name, file.getvalue(), "application/pdf")}
-        resp  = requests.post(f"{API_BASE_URL}/ingest", files=files, timeout=300)
+        resp  = requests.post(f"{API_BASE_URL}/ingest", files=files, timeout=900)
         return resp.json()
     except requests.exceptions.ConnectionError:
         return None
@@ -303,7 +389,8 @@ with st.sidebar:
     st.markdown('<div class="vv-divider">॥</div>', unsafe_allow_html=True)
 
     # ── Health ─────────────────────────────────────────────────────────────────
-    health = get_health()
+    api_ready = ensure_api_ready()
+    health    = get_health() if api_ready else None
     if health:
         st.markdown(f"""
 <div class="vv-ledger">
@@ -333,7 +420,7 @@ with st.sidebar:
         <span class="vv-ledger-value" style="color:var(--copper);">Offline</span>
     </div>
 </div>
-<p class="vv-hint">Run <code>uvicorn api.main:app</code> to reconnect.</p>
+<p class="vv-hint">The embedded API failed to start — check the app logs.</p>
 """, unsafe_allow_html=True)
 
     st.markdown('<div class="vv-divider">॥</div>', unsafe_allow_html=True)
@@ -347,6 +434,7 @@ with st.sidebar:
     )
 
     if st.button("Ingest document", use_container_width=True, disabled=uploaded is None):
+        ensure_api_ready()
         with st.spinner("Parsing → chunking → embedding…"):
             result = ingest_file(uploaded)
             if result and "total_chunks" in result:
@@ -388,10 +476,13 @@ with st.sidebar:
         help        = "Restrict retrieval to a specific document.",
     )
 
+    provider_options = ["ollama", "groq"]
+    provider_default = (health or {}).get("llm_default", "ollama")
     provider_choice = st.selectbox(
         "LLM provider",
-        options = ["ollama", "groq"],
-        index   = 0,
+        options = provider_options,
+        index   = provider_options.index(provider_default)
+                  if provider_default in provider_options else 0,
         help    = "Ollama runs locally (default). Groq requires GROQ_API_KEY on the API server.",
     )
 
@@ -445,6 +536,7 @@ if prompt := st.chat_input(
 
     # Query API and show response
     with st.chat_message("assistant", avatar="🛕"):
+        ensure_api_ready()
         with st.spinner("Retrieving context and reasoning…"):
             data = query_api(
                 query           = prompt,
@@ -455,7 +547,7 @@ if prompt := st.chat_input(
             )
 
         if data is None:
-            st.error("Cannot reach the VāṇiVerse API. Is uvicorn running?")
+            st.error(f"Cannot reach the VāṇiVerse API at {API_BASE_URL}.")
             st.stop()
 
         if "detail" in data:
