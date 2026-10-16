@@ -1,0 +1,15 @@
+.git
+.gitignore
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+*.faiss
+*.pkl
+.env
+.env.*
+9.nenu-evarini.pdf
+tests/
+docs/
+*.md

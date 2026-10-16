@@ -8,7 +8,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from core.config import API_HOST, API_PORT, DATA_DIR, SCORE_THRESHOLD, TOP_K
+from core.config import (
+    API_HOST,
+    API_PORT,
+    DATA_DIR,
+    GROQ_CONFIGURED,
+    LLM_PROVIDER,
+    SCORE_THRESHOLD,
+    TOP_K,
+)
 from core.exceptions import (
     IndexNotFoundError,
     InvalidRequestError,
@@ -20,7 +28,7 @@ from core.exceptions import (
 from ingestion.chunker import chunk_document
 from ingestion.normalizer import detect_script, normalize
 from ingestion.parser import parse_document
-from reasoning.generator import Generator
+from reasoning.generator import SUPPORTED_PROVIDERS, Generator
 from reasoning.prompter import build_no_result_prompt, build_prompt
 from retrieval.vector_store import VectorStore
 
@@ -102,6 +110,9 @@ class QueryRequest(BaseModel):
     score_threshold: float = Field(default=SCORE_THRESHOLD, ge=0.0, le=1.0)
     filter_source:   str | None = Field(default=None,
                                         description="Filter results to a specific source PDF filename.")
+    provider:        str | None = Field(default=None,
+                                        description="LLM provider override: 'ollama' or 'groq'. "
+                                                    "Omit to use the server default (LLM_PROVIDER).")
 
 
 class SourceReference(BaseModel):
@@ -117,6 +128,7 @@ class QueryResponse(BaseModel):
     query:         str
     query_script:  str
     model:         str
+    provider:      str
     backend:       str
     sources_used:  list[SourceReference]
     total_chunks_retrieved: int
@@ -151,6 +163,8 @@ class HealthResponse(BaseModel):
     total_vectors: int
     vector_backend: str
     llm_backend:   str
+    llm_default:   str
+    groq_configured: bool
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -199,11 +213,14 @@ async def health() -> HealthResponse:
     Use this to verify the service is live and an index is loaded.
     """
     store = _get_store()
+    default_provider = _generator.default_provider if _generator else LLM_PROVIDER
     return HealthResponse(
-        status         = "ok",
-        total_vectors  = store.total_vectors,
-        vector_backend = store.backend,
-        llm_backend    = _generator.backend if _generator else "uninitialized",
+        status          = "ok",
+        total_vectors   = store.total_vectors,
+        vector_backend  = store.backend,
+        llm_backend     = default_provider,
+        llm_default     = default_provider,
+        groq_configured = GROQ_CONFIGURED,
     )
 
 
@@ -281,6 +298,21 @@ async def query(request: QueryRequest) -> QueryResponse:
     store     = _get_store()
     generator = _get_generator()
 
+    # Resolve the provider for this request: explicit body value, else env default.
+    provider_name = (request.provider or LLM_PROVIDER).lower()
+    if provider_name not in SUPPORTED_PROVIDERS:
+        raise HTTPException(
+            status_code = 400,
+            detail      = f"Invalid provider '{request.provider}'. "
+                          f"Choose one of: {', '.join(SUPPORTED_PROVIDERS)}.",
+        )
+    if provider_name == "groq" and not GROQ_CONFIGURED:
+        raise HTTPException(
+            status_code = 503,
+            detail      = "Provider 'groq' selected but GROQ_API_KEY is not "
+                          "configured on the server.",
+        )
+
     if store.total_vectors == 0:
         raise HTTPException(
             status_code = 503,
@@ -305,12 +337,13 @@ async def query(request: QueryRequest) -> QueryResponse:
 
     if not chunks:
         prompt   = build_no_result_prompt(normalized_query, script)
-        response = generator.generate(prompt)
+        response = generator.generate(prompt, provider=provider_name)
         return QueryResponse(
             answer                 = response.answer,
             query                  = request.query,
             query_script           = script,
             model                  = response.model,
+            provider               = response.provider,
             backend                = response.backend,
             sources_used           = [],
             total_chunks_retrieved = 0,
@@ -322,7 +355,7 @@ async def query(request: QueryRequest) -> QueryResponse:
         raise HTTPException(status_code=500, detail=str(exc))
 
     try:
-        response = generator.generate(prompt)
+        response = generator.generate(prompt, provider=provider_name)
     except LLMInferenceError as exc:
         raise HTTPException(status_code=502, detail=exc.message)
 
@@ -342,6 +375,7 @@ async def query(request: QueryRequest) -> QueryResponse:
         query                  = request.query,
         query_script           = script,
         model                  = response.model,
+        provider               = response.provider,
         backend                = response.backend,
         sources_used           = sources,
         total_chunks_retrieved = len(chunks),

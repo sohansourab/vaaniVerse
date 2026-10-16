@@ -1,4 +1,5 @@
 import logging
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 import httpx
@@ -9,7 +10,7 @@ from core.config import (
     GROQ_MAX_TOKENS,
     GROQ_MODEL,
     GROQ_TEMPERATURE,
-    LLM_BACKEND,
+    LLM_PROVIDER,
     OLLAMA_BASE_URL,
     OLLAMA_MODEL,
     OLLAMA_TEMPERATURE,
@@ -19,6 +20,9 @@ from reasoning.prompter import PromptPackage
 
 logger = logging.getLogger(__name__)
 
+# Provider names accepted by the API / config.
+SUPPORTED_PROVIDERS: tuple[str, ...] = ("ollama", "groq")
+
 
 # ── Response dataclass ─────────────────────────────────────────────────────────
 
@@ -27,65 +31,201 @@ class GeneratedResponse:
     answer:          str
     query:           str
     model:           str
-    backend:         str
-    sources_used:    list[dict]   # [{chunk_id, source, page_number, score}, ...]
-    prompt_tokens:   int | None   # None for Ollama (not always returned)
+    provider:        str         # provider actually used ("ollama" | "groq")
+    backend:         str         # legacy alias of `provider`, kept for compatibility
+    sources_used:    list[dict]  # [{chunk_id, source, page_number, score}, ...]
+    prompt_tokens:   int | None  # None when the provider does not report usage
     completion_tokens: int | None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Groq Backend
+# Provider interface
 # ══════════════════════════════════════════════════════════════════════════════
 
-class GroqGenerator:
+class LLMProvider(ABC):
     """
-    LLM inference via Groq API.
-    Uses llama3-70b-8192 by default — fastest available model with
-    sufficient context window for 5 retrieved chunks + system prompt.
+    Interface for a text-generation backend.
+
+    Implementations take a user prompt (plus an optional system prompt) and
+    return the model's completion as a plain string.
     """
 
-    def __init__(self) -> None:
-        if not GROQ_API_KEY:
-            raise LLMInferenceError(
-                "GROQ_API_KEY is not set. Add it to your .env file.",
-                details={"backend": "groq"},
-            )
-        self._client = Groq(api_key=GROQ_API_KEY)
+    name: str = "base"
 
-    def generate(self, package: PromptPackage) -> GeneratedResponse:
+    @abstractmethod
+    def generate(self, prompt: str, **kwargs) -> str:
+        """Return the completion string for `prompt`."""
+        raise NotImplementedError
+
+    @property
+    def model_name(self) -> str:
+        return self.name
+
+
+# ── Ollama provider (default) ──────────────────────────────────────────────────
+
+class OllamaProvider(LLMProvider):
+    """
+    LLM inference via a local Ollama instance.
+    Offline-friendly default — no data leaves the machine.
+    Requires: `ollama serve` and a pulled model (e.g. `ollama pull qwen2.5:3b`).
+    """
+
+    name = "ollama"
+
+    def __init__(
+        self,
+        base_url:    str   = OLLAMA_BASE_URL,
+        model:       str   = OLLAMA_MODEL,
+        temperature: float = OLLAMA_TEMPERATURE,
+    ) -> None:
+        self._base_url    = base_url.rstrip("/")
+        self._chat_url    = f"{self._base_url}/api/chat"
+        self._model       = model
+        self._temperature = temperature
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    def generate(
+        self,
+        prompt:        str,
+        *,
+        system_prompt: str | None = None,
+        temperature:   float | None = None,
+        max_tokens:    int   = 1024,
+        timeout:       int   = 120,   # local inference can be slow on CPU/small GPUs
+        **kwargs,
+    ) -> str:
         """
-        Sends a PromptPackage to Groq and returns a GeneratedResponse.
-
-        Args:
-            package: PromptPackage from reasoning.prompter.build_prompt()
-
-        Returns:
-            GeneratedResponse with answer, source metadata, and token counts.
+        Sends a chat request to the local Ollama `/api/chat` endpoint.
 
         Raises:
-            LLMInferenceError: On API error, timeout, or empty response.
+            LLMInferenceError: On connection failure, timeout, or empty response.
         """
-        messages = [
-            {"role": "system", "content": package.system_prompt},
-            {"role": "user",   "content": package.user_prompt},
-        ]
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model":  self._model,
+            "stream": False,
+            "options": {
+                "temperature": self._temperature if temperature is None else temperature,
+                "num_predict": max_tokens,
+            },
+            "messages": messages,
+        }
 
         try:
-            response = self._client.chat.completions.create(
-                model       = GROQ_MODEL,
+            resp = httpx.post(self._chat_url, json=payload, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.TimeoutException as exc:
+            raise LLMInferenceError(
+                f"Ollama request timed out after {timeout}s.",
+                details={"model": self._model, "base_url": self._base_url},
+            ) from exc
+        except Exception as exc:
+            raise LLMInferenceError(
+                "Ollama API call failed.",
+                details={"model": self._model, "base_url": self._base_url, "error": str(exc)},
+            ) from exc
+
+        answer = data.get("message", {}).get("content", "").strip()
+        if not answer:
+            raise LLMInferenceError(
+                "Ollama returned an empty response.",
+                details={"model": self._model, "raw_response": str(data)[:200]},
+            )
+
+        logger.info(
+            f"Ollama [{self._model}] — "
+            f"prompt_tokens={data.get('prompt_eval_count')}, "
+            f"completion_tokens={data.get('eval_count')}"
+        )
+        return answer
+
+
+# ── Groq provider (opt-in) ─────────────────────────────────────────────────────
+
+class GroqProvider(LLMProvider):
+    """
+    LLM inference via the Groq API (opt-in).
+
+    The API key is read from the environment at construction time. Construction
+    never raises: a missing key fails only when `generate()` is actually called,
+    so an unconfigured Groq backend cannot crash the server at startup.
+    """
+
+    name = "groq"
+
+    def __init__(
+        self,
+        api_key:     str   = GROQ_API_KEY,
+        model:       str   = GROQ_MODEL,
+        temperature: float = GROQ_TEMPERATURE,
+        max_tokens:  int   = GROQ_MAX_TOKENS,
+    ) -> None:
+        self._api_key     = api_key
+        self._model       = model
+        self._temperature = temperature
+        self._max_tokens  = max_tokens
+        self._client: Groq | None = None
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._api_key)
+
+    def _ensure_client(self) -> Groq:
+        if not self._api_key:
+            raise LLMInferenceError(
+                "GROQ_API_KEY is not set. Configure it to use provider 'groq'.",
+                details={"provider": "groq"},
+            )
+        if self._client is None:
+            self._client = Groq(api_key=self._api_key)
+        return self._client
+
+    def generate(
+        self,
+        prompt:        str,
+        *,
+        system_prompt: str | None = None,
+        **kwargs,
+    ) -> str:
+        """
+        Sends a chat request to the Groq API.
+
+        Raises:
+            LLMInferenceError: If the key is missing, on API error/timeout, or on
+                an empty response.
+        """
+        client = self._ensure_client()
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        try:
+            response = client.chat.completions.create(
+                model       = self._model,
                 messages    = messages,
-                max_tokens  = GROQ_MAX_TOKENS,
-                temperature = GROQ_TEMPERATURE,
+                max_tokens  = self._max_tokens,
+                temperature = self._temperature,
             )
         except Exception as exc:
             raise LLMInferenceError(
                 "Groq API call failed.",
-                details={
-                    "model":         GROQ_MODEL,
-                    "error":         str(exc),
-                    "query_snippet": package.query[:80],
-                },
-            )
+                details={"model": self._model, "error": str(exc)},
+            ) from exc
 
         choice = response.choices[0]
         answer = choice.message.content
@@ -93,145 +233,25 @@ class GroqGenerator:
         if not answer or not answer.strip():
             raise LLMInferenceError(
                 "Groq returned an empty response.",
-                details={"model": GROQ_MODEL, "finish_reason": choice.finish_reason},
+                details={"model": self._model, "finish_reason": choice.finish_reason},
             )
 
-        usage = response.usage
-
+        usage = getattr(response, "usage", None)
         logger.info(
-            f"Groq [{GROQ_MODEL}] — "
-            f"prompt_tokens={usage.prompt_tokens}, "
-            f"completion_tokens={usage.completion_tokens}"
+            f"Groq [{self._model}] — "
+            f"prompt_tokens={getattr(usage, 'prompt_tokens', None)}, "
+            f"completion_tokens={getattr(usage, 'completion_tokens', None)}"
         )
-
-        return GeneratedResponse(
-            answer            = answer.strip(),
-            query             = package.query,
-            model             = GROQ_MODEL,
-            backend           = "groq",
-            sources_used      = _extract_source_metadata(package),
-            prompt_tokens     = usage.prompt_tokens,
-            completion_tokens = usage.completion_tokens,
-        )
+        return answer.strip()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Ollama Backend
-# ══════════════════════════════════════════════════════════════════════════════
-
-class OllamaGenerator:
-    """
-    LLM inference via local Ollama instance.
-    Offline fallback — no data leaves the machine.
-    Requires: `ollama serve` + `ollama pull llama3`
-
-    Uses /api/chat endpoint (supports system/user message separation)
-    rather than /api/generate (prompt string only) for consistency
-    with the PromptPackage structure.
-    """
-
-    def __init__(self) -> None:
-        self._base_url = OLLAMA_BASE_URL.rstrip("/")
-        self._chat_url = f"{self._base_url}/api/chat"
-        self._health_url = f"{self._base_url}/api/tags"
-        self._verify_connection()
-
-    def _verify_connection(self) -> None:
-        """Fails fast if Ollama is not reachable before the first query."""
-        try:
-            resp = httpx.get(self._health_url, timeout=5)
-            resp.raise_for_status()
-        except Exception as exc:
-            raise LLMInferenceError(
-                f"Cannot reach Ollama at {self._base_url}. "
-                f"Ensure `ollama serve` is running.",
-                details={"base_url": self._base_url, "error": str(exc)},
-            )
-
-    def generate(self, package: PromptPackage) -> GeneratedResponse:
-        """
-        Sends a PromptPackage to the local Ollama /api/chat endpoint.
-
-        Args:
-            package: PromptPackage from reasoning.prompter.build_prompt()
-
-        Returns:
-            GeneratedResponse with answer and source metadata.
-            prompt_tokens / completion_tokens may be None if Ollama
-            does not return eval_count for the selected model.
-
-        Raises:
-            LLMInferenceError: On connection failure, timeout, or empty response.
-        """
-        payload = {
-            "model":  OLLAMA_MODEL,
-            "stream": False,
-            "options": {
-                "temperature": OLLAMA_TEMPERATURE,
-                "num_predict": 1024,
-            },
-            "messages": [
-                {"role": "system", "content": package.system_prompt},
-                {"role": "user",   "content": package.user_prompt},
-            ],
-        }
-
-        try:
-            resp = httpx.post(
-                self._chat_url,
-                json    = payload,
-                timeout = 120,   # local inference can be slow on CPU
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except httpx.TimeoutException:
-            raise LLMInferenceError(
-                "Ollama request timed out after 120s.",
-                details={"model": OLLAMA_MODEL, "base_url": self._base_url},
-            )
-        except Exception as exc:
-            raise LLMInferenceError(
-                "Ollama API call failed.",
-                details={"model": OLLAMA_MODEL, "error": str(exc)},
-            )
-
-        answer = data.get("message", {}).get("content", "").strip()
-
-        if not answer:
-            raise LLMInferenceError(
-                "Ollama returned an empty response.",
-                details={"model": OLLAMA_MODEL, "raw_response": str(data)[:200]},
-            )
-
-        prompt_tokens     = data.get("prompt_eval_count")
-        completion_tokens = data.get("eval_count")
-
-        logger.info(
-            f"Ollama [{OLLAMA_MODEL}] — "
-            f"prompt_tokens={prompt_tokens}, "
-            f"completion_tokens={completion_tokens}"
-        )
-
-        return GeneratedResponse(
-            answer            = answer,
-            query             = package.query,
-            model             = OLLAMA_MODEL,
-            backend           = "ollama",
-            sources_used      = _extract_source_metadata(package),
-            prompt_tokens     = prompt_tokens,
-            completion_tokens = completion_tokens,
-        )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Shared Utilities
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Shared utilities ───────────────────────────────────────────────────────────
 
 def _extract_source_metadata(package: PromptPackage) -> list[dict]:
     """
     Extracts citation-ready metadata from context chunks.
-    Returned in GeneratedResponse.sources_used for API consumers
-    to render source attribution in the UI without re-parsing the answer text.
+    Returned in GeneratedResponse.sources_used for API consumers to render
+    source attribution without re-parsing the answer text.
     """
     return [
         {
@@ -246,44 +266,86 @@ def _extract_source_metadata(package: PromptPackage) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Unified Interface
+# Unified Generator (provider-agnostic facade)
 # ══════════════════════════════════════════════════════════════════════════════
+
+_PROVIDER_FACTORIES: dict[str, type[LLMProvider]] = {
+    "ollama": OllamaProvider,
+    "groq":   GroqProvider,
+}
+
 
 class Generator:
     """
-    Backend-agnostic LLM generator.
-    Reads LLM_BACKEND from config and delegates to Groq or Ollama.
-    All downstream code (api/main.py) imports only this class.
+    Provider-agnostic LLM generator.
+
+    The environment-configured provider (`LLM_PROVIDER`, default "ollama") is used
+    unless a per-call `provider` is supplied. Providers are constructed lazily and
+    never touch the network at construction time, so startup cannot fail just
+    because a backend is unconfigured or offline.
 
     Usage:
         generator = Generator()
-        response  = generator.generate(prompt_package)
-        print(response.answer)
-        print(response.sources_used)
+        response  = generator.generate(prompt_package)                  # env default
+        response  = generator.generate(prompt_package, provider="groq") # override
     """
 
-    def __init__(self, backend: str = LLM_BACKEND) -> None:
-        self.backend = backend.lower()
-        if self.backend == "groq":
-            self._generator = GroqGenerator()
-        elif self.backend == "ollama":
-            self._generator = OllamaGenerator()
-        else:
-            raise LLMInferenceError(
-                f"Unknown LLM_BACKEND '{backend}'. Choose 'groq' or 'ollama'.",
-                details={"backend": backend},
-            )
-        logger.info(f"Generator initialized with backend: '{self.backend}'")
+    def __init__(self, provider: str = LLM_PROVIDER) -> None:
+        self.default_provider = (provider or "ollama").lower()
+        self._providers: dict[str, LLMProvider] = {}
+        logger.info(f"Generator initialized. Default provider: '{self.default_provider}'")
 
-    def generate(self, package: PromptPackage) -> GeneratedResponse:
+    @property
+    def backend(self) -> str:
+        """Legacy alias for the default provider name."""
+        return self.default_provider
+
+    def get_provider(self, name: str | None = None) -> LLMProvider:
         """
-        Delegates to the configured backend generator.
+        Returns a cached provider instance for `name` (defaults to the env default).
+
+        Raises:
+            LLMInferenceError: If `name` is not a supported provider.
+        """
+        provider_name = (name or self.default_provider).lower()
+        if provider_name not in _PROVIDER_FACTORIES:
+            raise LLMInferenceError(
+                f"Unknown LLM provider '{provider_name}'. "
+                f"Choose one of: {', '.join(_PROVIDER_FACTORIES)}.",
+                details={"provider": provider_name, "supported": list(_PROVIDER_FACTORIES)},
+            )
+        if provider_name not in self._providers:
+            self._providers[provider_name] = _PROVIDER_FACTORIES[provider_name]()
+        return self._providers[provider_name]
+
+    def generate(
+        self,
+        package:  PromptPackage,
+        provider: str | None = None,
+    ) -> GeneratedResponse:
+        """
+        Generates an answer for `package` using the selected provider.
 
         Args:
-            package: PromptPackage from prompter.build_prompt()
-                     or prompter.build_no_result_prompt()
+            package:  PromptPackage from reasoning.prompter.
+            provider: Optional per-call override ("ollama" | "groq").
+                      None uses the environment default.
 
         Returns:
-            GeneratedResponse
+            GeneratedResponse (includes the `provider` that was used).
         """
-        return self._generator.generate(package)
+        active = self.get_provider(provider)
+        answer = active.generate(
+            package.user_prompt,
+            system_prompt=package.system_prompt,
+        )
+        return GeneratedResponse(
+            answer            = answer,
+            query             = package.query,
+            model             = active.model_name,
+            provider          = active.name,
+            backend           = active.name,
+            sources_used      = _extract_source_metadata(package),
+            prompt_tokens     = None,
+            completion_tokens = None,
+        )

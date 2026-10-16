@@ -264,11 +264,13 @@ def query_api(
     top_k: int,
     score_threshold: float,
     filter_source: str | None,
+    provider: str,
 ) -> dict | None:
     payload = {
         "query":           query,
         "top_k":           top_k,
         "score_threshold": score_threshold,
+        "provider":        provider,
     }
     if filter_source:
         payload["filter_source"] = filter_source
@@ -386,6 +388,13 @@ with st.sidebar:
         help        = "Restrict retrieval to a specific document.",
     )
 
+    provider_choice = st.selectbox(
+        "LLM provider",
+        options = ["ollama", "groq"],
+        index   = 0,
+        help    = "Ollama runs locally (default). Groq requires GROQ_API_KEY on the API server.",
+    )
+
     st.markdown('<div class="vv-divider">॥</div>', unsafe_allow_html=True)
 
     if st.button("Clear conversation", use_container_width=True):
@@ -418,7 +427,7 @@ for msg in st.session_state.messages:
                 st.markdown(
                     f'<p class="vv-meta">'
                     f'{script_badge(meta.get("query_script", "unknown"))}&nbsp;&nbsp;'
-                    f'<b>{meta.get("model", "?")}</b>&nbsp;&nbsp;'
+                    f'{meta.get("provider", "?")}&nbsp;/&nbsp;<b>{meta.get("model", "?")}</b>&nbsp;&nbsp;'
                     f'{meta.get("total_chunks_retrieved", 0)} chunks retrieved'
                     f'</p>',
                     unsafe_allow_html=True,
@@ -442,6 +451,7 @@ if prompt := st.chat_input(
                 top_k           = top_k,
                 score_threshold = score_threshold,
                 filter_source   = filter_source.strip() or None,
+                provider        = provider_choice,
             )
 
         if data is None:
@@ -456,6 +466,7 @@ if prompt := st.chat_input(
         sources = data.get("sources_used", [])
         script  = data.get("query_script", "unknown")
         model   = data.get("model", "?")
+        provider_used = data.get("provider", provider_choice)
         chunks  = data.get("total_chunks_retrieved", 0)
 
         # Render answer
@@ -465,7 +476,7 @@ if prompt := st.chat_input(
         st.markdown(
             f'<p class="vv-meta">'
             f'{script_badge(script)}&nbsp;&nbsp;'
-            f'<b>{model}</b>&nbsp;&nbsp;'
+            f'{provider_used}&nbsp;/&nbsp;<b>{model}</b>&nbsp;&nbsp;'
             f'{chunks} chunks retrieved'
             f'</p>',
             unsafe_allow_html=True,
@@ -481,6 +492,7 @@ if prompt := st.chat_input(
             "sources": sources,
             "meta":    {
                 "query_script":          script,
+                "provider":              provider_used,
                 "model":                 model,
                 "total_chunks_retrieved": chunks,
             },

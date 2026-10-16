@@ -2,7 +2,9 @@
 .env
 __pycache__/
 *.pyc
+.pytest_cache/
 indexes/
-data/documents/
+data/
 *.faiss
 *.pkl
+9.nenu-evarini.pdf
