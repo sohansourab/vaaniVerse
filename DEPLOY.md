@@ -1,7 +1,9 @@
-# DEPLOY.md — Deploying VāṇiVerse to Railway (prepared, **not deployed**)
+# DEPLOY.md — Deploying VāṇiVerse to Railway
 
 This document describes how to deploy the **API** (`api/main.py`) to
-[Railway](https://railway.app). Nothing here has been executed — no deploy was run.
+[Railway](https://railway.app). A live instance exists at
+`https://vaaniverse-production.up.railway.app`; §2 describes how its index is
+shipped, which is what makes `/search` and `/query` work.
 
 Everything the app needs is driven by environment variables. **No secret is ever
 committed**; `.env` is gitignored and `.env.example` ships with an empty
@@ -16,7 +18,7 @@ committed**; `.env` is gitignored and `.env.example` ships with an empty
 | API image | `Dockerfile` | `python:3.12-slim`, two-stage build, **non-root** user `appuser`, honours `PORT` |
 | Build/deploy config | `railway.json` | Dockerfile builder, `/health` healthcheck, restart policy |
 | Ignore list | `.dockerignore` | excludes `data/`, `.venv/`, the PDF, `.env`, tests, docs |
-| Index | Not in the image | must be provided at runtime — see §2 |
+| Index | Uploaded into a Railway volume via the CLI | see §2 |
 
 Build the image locally to sanity-check it before deploying:
 
@@ -62,43 +64,52 @@ put them in `Dockerfile`, `railway.json`, or any committed file.
 The FAISS index (`data/vectors/*.faiss` + `*.pkl`, plus `data/documents/`) is the
 app's state. Two ways to get it onto Railway:
 
-### ✅ Recommended — build locally, ship to a Railway **volume**
+### ✅ Recommended — upload the index straight into a Railway **volume**
 
-Why: the index is small (the book is 4.4 MB; BGE-M3 vectors are 1024-dim, so a few
-thousand chunks is tens of MB). Rebuilding inside Railway would require the source
-PDF *and* a ~2 GB `BAAI/bge-m3` download, then slow **CPU** embedding on every fresh
-container. Shipping once and persisting is faster, cheaper, and deterministic.
+Why: the index is small and static (135 KB FAISS + 86 KB metadata for the one
+book). Rebuilding inside Railway would require the source PDF *and* a ~2 GB
+`BAAI/bge-m3` download, then slow **CPU** embedding on every fresh container
+(this is exactly what made `POST /ingest` crash the live service). Uploading once
+and persisting on a volume is faster, cheaper, and deterministic.
+
+`railway volume files upload` writes local files directly into the volume, so
+**nothing is uploaded as code** — no `railway up`, and therefore no chance of
+shipping `.env`, `.venv/`, or the book text to Railway.
 
 ```bash
 # 1. Build the index locally (GPU) — see VERIFY.md for the exact commands.
 python -m scripts.ingest_documents --input 9.nenu-evarini.pdf
 
 # 2. Inspect what to ship
-ls data/vectors data/documents
+ls data/vectors          # vaaniverse.faiss + vaaniverse_meta.pkl
 
-# 3. Create a Railway project + service, then attach a volume at /app/data
-railway init
-railway link                     # select the project/service
+# 3. Link to the project/service, then attach a volume at /app/data
+railway login
+railway link
 railway volume add --mount-path /app/data
+railway volume list                  # note the volume name
 
-# 4. Copy the index into the volume.
-#    (a) If your plan supports it, open a shell into the running service and
-#        upload the tarball, e.g.:
-tar -czf index.tgz -C data .
-railway ssh
-#   ...inside the container:
-#     mkdir -p /app/data && tar -xzf /tmp/index.tgz -C /app/data
+# 4. Upload the index into the volume (the volume root maps to /app/data).
+#    --volume must be passed BEFORE the subcommand.
+railway volume files --volume <volume> upload data/vectors/vaaniverse.faiss /vectors/vaaniverse.faiss
+railway volume files --volume <volume> upload data/vectors/vaaniverse_meta.pkl /vectors/vaaniverse_meta.pkl
 
-#    (b) Alternative without SSH: temporarily bake `data/` into a one-off image by
-#        removing `data/` from .dockerignore, build+push it, run its start command
-#        as a one-shot job (`cp -r /app/data/* /volume/`), then revert .dockerignore.
+# 5. Confirm what landed, then reload the index
+railway volume files --volume <volume> list /vectors
+railway restart                      # the API loads the index only at startup
+
+# 6. Verify
+curl -s https://<domain>/health | jq '.total_vectors'   # -> 33
 ```
 
-The container's `/app/data` must be writable by the non-root `appuser`; the
-Dockerfile pre-creates `/app/data/documents` and `/app/data/vectors` and chowns
-them. If you mount a fresh Railway volume, ensure the mount is writable by
-`appuser` (Railway volumes are mounted as root by default — run the copy as root
-once and `chown -R 10001:10001 /app/data`).
+Notes:
+
+- The API loads the index **once at startup**, so `railway restart` (or
+  `railway redeploy`) is required after uploading for it to take effect.
+- The app only *reads* the index, so root-owned uploads are fine.
+- If `list /vectors` is empty because the directory does not exist yet, upload the
+  whole directory instead:
+  `railway volume files --volume <volume> upload data/vectors /vectors`.
 
 ### Alternative — rebuild the index on Railway
 
