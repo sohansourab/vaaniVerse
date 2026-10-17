@@ -430,7 +430,7 @@ with st.sidebar:
     uploaded = st.file_uploader(
         "Upload a Telugu PDF",
         type    = ["pdf"],
-        help    = "Text-based PDFs only. Scanned documents need OCR (phase 2).",
+        help    = "Text PDFs use their text layer. Scanned pages are OCR'd when an engine is available.",
     )
 
     if st.button("Ingest document", use_container_width=True, disabled=uploaded is None):

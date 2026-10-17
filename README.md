@@ -43,6 +43,7 @@ those as first-class problems.
 | --- | --- |
 | Same query, different scripts | Script detection + Romanized-Telugu transliteration before embedding |
 | Telugu PDFs extract badly | Unicode artifact repair (duplicate matras, broken conjuncts, zero-width chars) |
+| Some pages are just pictures | OCR fallback (Tesseract / EasyOCR) for pages with no usable text layer |
 | Generic splitting destroys context | Sentence-aware, overlap-aware chunking with per-chunk metadata |
 | Model answers from memory | Evidence-only prompting; abstains when sources don't cover the question |
 | Answers can't be verified | Every response returns `sources_used` with source, page, and score |
@@ -247,14 +248,42 @@ based on already-mutated text.
 
 ---
 
+## Scanned documents (OCR)
+
+A PDF with no text layer — a photograph of a page — produces no chunks on its own. VāṇiVerse now
+falls back to OCR instead of returning nothing. Rasterizing costs nothing extra: PyMuPDF already
+returns raw pixels, so no image is written to disk. The recovered text re-enters the same
+`normalize()` step, which means the transliteration and Unicode repair above apply to OCR output too.
+
+Engines are pluggable and **only Telugu-capable ones are registered**. Support was verified against
+upstream sources rather than assumed: Tesseract ships `tel.traineddata` in the official `tessdata_fast`
+repo, and EasyOCR ships `te_char.txt`. PaddleOCR has no Telugu dictionary in `ppocr/utils/dict` and
+Surya's repository has no Telugu entry, so neither is offered. The GPU OCR models that would likely do
+much better on degraded scans cannot co-reside with BGE-M3 and `qwen2.5:3b` inside 4 GB of VRAM, so
+they sit behind the same interface as a documented upgrade rather than a shipped default.
+
+| Corpus | Tesseract CER | EasyOCR CER |
+| --- | --- | --- |
+| Expert-verified Telugu text blocks (n=50) | **0.137** | 0.238 |
+| Real book page scans (n=6) | 0.489 | **0.477** |
+
+Tesseract is the default **on measurement, not preference**: clearly better on pre-segmented text,
+statistically tied on full pages, and 3.3× faster per page (5.0 s vs 16.3 s) on CPU. The blocks-versus-
+pages gap is the honest headline — segmentation and 19th-century print cost far more than the choice
+of recognizer does. Full detail, including why neither engine is good enough for faithful
+transcription of old print, is in [docs/OCR.md](docs/OCR.md).
+
+---
+
 ## Component map
 
 | Module | Responsibility | Key entry points |
 | --- | --- | --- |
 | `api/main.py` | HTTP orchestration; startup singletons for store + generator | `lifespan`, 6 endpoints |
 | `core/config.py` | Single source of truth for env-driven settings | `LLM_PROVIDER`, `FAISS_*_PATH`, `TOP_K`, `SCORE_THRESHOLD` |
-| `core/exceptions.py` | Typed domain errors with structured `details` | `VaaniverseBaseError` + 11 subclasses |
-| `ingestion/parser.py` | PDF → pages with layout metadata | `parse_document()` |
+| `core/exceptions.py` | Typed domain errors with structured `details` | `VaaniverseBaseError` + 12 subclasses |
+| `ingestion/parser.py` | PDF → pages with layout metadata; OCR fallback for scans | `parse_document()` |
+| `ingestion/ocr.py` | Pluggable Telugu OCR for image-only pages | `ocr_image()`, `resolve_engine()`, `available_engines()` |
 | `ingestion/normalizer.py` | Script detection, Unicode repair, transliteration | `detect_script()`, `normalize()`, `repair_telugu_unicode()` |
 | `ingestion/chunker.py` | Sentence-aware packing with overlap + metadata | `chunk_document()`, `chunk_page()` |
 | `retrieval/embeddings.py` | Lazy-loaded BGE-M3 dense encoder | `get_model()`, `embed_chunks()`, `embed_query()` |
@@ -546,8 +575,11 @@ a GPU:
 
 These are real and worth knowing before you rely on the system:
 
-1. **Text-based PDFs only.** Scanned or image-only pages yield zero chunks and `POST /ingest` returns
-   `422`. OCR is not implemented yet.
+1. **OCR is a fallback, not a cure.** Image-only pages are now transcribed instead of yielding nothing
+   (see [docs/OCR.md](docs/OCR.md)), but Tesseract on real Telugu book scans is weak, and its accuracy
+   is well below what a current GPU model would give. It also needs the optional OCR dependencies and
+   the Telugu language data; without them the parser degrades to text-only rather than failing. A
+   scanned PDF with no engine installed still yields zero chunks and `422`.
 2. **PDF extraction quality caps retrieval quality.** Telugu extracted from many PDFs contains
    spacing artifacts (e.g. `మ ైన` for `మైన`). Normalization repairs structural damage, but it cannot
    recover text that was never extracted correctly. This measurably weakens embeddings.
@@ -592,6 +624,7 @@ for each milestone live there, and this table is its summary.
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Clean-architecture design, layer contracts, Indic-language policy, evaluation design |
 | [docs/DESIGN-NOTES.md](docs/DESIGN-NOTES.md) | Long-form design rationale (architecture blueprint, multilingual trade-offs, evaluation metrics) |
 | [docs/EVALUATION.md](docs/EVALUATION.md) | Measured retrieval / grounding / latency results, methodology, and threats to validity |
+| [docs/OCR.md](docs/OCR.md) | OCR for scanned pages: verified engine support, datasets, measured CER/WER, limitations |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestone-based plan with engineering priorities and exit criteria |
 | [DEPLOY.md](DEPLOY.md) | Container and hosted deployment |
 | [VERIFY.md](VERIFY.md) | Verified local run: commands and observed output |

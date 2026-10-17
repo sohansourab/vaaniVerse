@@ -97,21 +97,31 @@ content, and the weakest query path.
 
 ### Status
 
-🔄 **In progress.** **Transliteration is done** — the pure-Roman path ran no syllable walk at all, and
-four of five Romanized gold questions reached the embedder as raw ASCII; Romanized recall went
-**60% → 100%** and overall **0.833 → 0.900** with no out-of-domain regression
-([EVALUATION.md §5](EVALUATION.md#5-change-log)). Still active: **reranking** — the 0.45 threshold
-rejects 100% of out-of-domain queries but also stops 23.3% of genuine ones, and the in-corpus and
-out-of-domain score distributions overlap, so no fixed cutoff can fix it. OCR is **not started** — no
-OCR code exists in the repository.
+🔄 **In progress.** Two of the three workstreams have landed.
+
+**Transliteration is done** — the pure-Roman path ran no syllable walk at all, and four of five
+Romanized gold questions reached the embedder as raw ASCII; Romanized recall went **60% → 100%** and
+overall **0.833 → 0.900** with no out-of-domain regression
+([EVALUATION.md §5](EVALUATION.md#5-change-log)).
+
+**OCR-first ingestion is done** for the engine layer — a pluggable Tesseract/EasyOCR path behind one
+`ocr_image()` call, firing only on pages with no usable text layer, with engine support verified
+against upstream sources rather than assumed. Only Telugu-capable engines are registered: PaddleOCR
+has no Telugu dictionary and Surya has no Telugu entry, so neither is advertised. Measured CER/WER
+and the reasoning are in [OCR.md](OCR.md).
+
+Still active: **reranking** — the 0.45 threshold rejects 100% of out-of-domain queries but also stops
+23.3% of genuine ones, and the in-corpus and out-of-domain score distributions overlap, so no fixed
+cutoff can fix it.
 
 ### Tasks
 
 - **[done]** fix the Romanized-Telugu transliteration path — 60% → 100% recall@5
+- **[done]** OCR-first ingestion for scanned and image-only pages — [OCR.md](OCR.md)
 - **[active]** add a reranking stage to replace the fixed `score_threshold` cutoff
-- improve OCR pipeline for scanned manuscripts and degraded PDFs
-- add OCR-first ingestion for manuscripts and images, with page-level metadata and captions
-- add fallback behavior when OCR confidence is low
+- **[open]** act on OCR confidence — it is recorded per page but nothing consumes it yet; low
+  confidence should retry or be surfaced rather than silently indexed
+- **[open]** improve the OCR path for degraded manuscripts (a GPU VLM behind the same interface)
 - add document provenance metadata for source attribution
 - create language-specific handling for literary, historical, and philosophical texts
 - add chunk overlap tuning for long-form verse and prose, and better token estimation
@@ -233,5 +243,12 @@ normalization regression tests) is **done** — see milestone 2. Current next st
 - implement nDCG and MAP to close out milestone 2's metric list
 - author a held-out Romanized-Telugu question set so the transliteration gain is not measured on the
   same five questions that motivated it
-- add a scanned/degraded PDF fixture so milestone 3's OCR work is testable
+- **[done]** OCR fixtures for milestone 3 — 51 expert-verified Telugu text blocks plus real book page
+  scans, fetched on demand into `data/` so nothing licensed is committed (see [OCR.md](OCR.md))
+- add a scanned-**PDF** fixture (image-only pages inside a PDF) so the whole
+  `parse_document → OCR → normalize → chunk` path is tested end to end, not just the engine layer
+- measure **retrieval** on OCR-derived text, not transcription accuracy — the OCR results show neither
+  engine can faithfully transcribe old print (CER 0.489, WER 1.058; see [OCR.md](OCR.md)), but the
+  pipeline only needs to *find* passages, so recall may well survive it. Currently asserted nowhere
+  and measured nowhere.
 - overwrite the hand-set `chunk_size` / `top_k` / `score_threshold` with values derived from a sweep
