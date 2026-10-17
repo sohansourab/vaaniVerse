@@ -10,6 +10,11 @@
 
 <br/>
 
+### ▶️ [**Try the live demo →**](https://vaaniverse-27.streamlit.app/)
+
+<br/>
+
+[![Live demo](https://img.shields.io/badge/Streamlit%20Cloud-live-brightgreen?logo=streamlit&logoColor=white)](https://vaaniverse-27.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.66-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io)
@@ -41,6 +46,11 @@ those as first-class problems.
 | Generic splitting destroys context | Sentence-aware, overlap-aware chunking with per-chunk metadata |
 | Model answers from memory | Evidence-only prompting; abstains when sources don't cover the question |
 | Answers can't be verified | Every response returns `sources_used` with source, page, and score |
+
+> **Live demo:** <https://vaaniverse-27.streamlit.app/> — hosted on Streamlit Community Cloud.
+> There is no Ollama there, so it runs the **Groq** provider, and the container disk is ephemeral:
+> upload a Telugu PDF in the sidebar and click **Ingest document** to build the index before asking.
+> The first ingest downloads BGE-M3 (~2.2 GB) and embeds on CPU, so give it a few minutes.
 
 > **Status:** Phase 1 complete — the end-to-end pipeline runs, the API and UI are live, and the
 > provider switch (Ollama ⇆ Groq) is implemented and tested. OCR and multi-language expansion are
@@ -113,7 +123,7 @@ flowchart LR
 | Topology | How the API starts | Typical provider |
 | --- | --- | --- |
 | **Local** | `uvicorn api.main:app` as a separate process | Ollama (offline, private) |
-| **Streamlit Cloud** | `frontend/app.py` calls `ensure_api_ready()`, which boots uvicorn on a daemon thread inside the Streamlit process | Groq (no local GPU/Ollama available) |
+| **Streamlit Cloud** · [live ↗](https://vaaniverse-27.streamlit.app/) | `frontend/app.py` calls `ensure_api_ready()`, which boots uvicorn on a daemon thread inside the Streamlit process | Groq (no local GPU/Ollama available) |
 | **Container** | `Dockerfile` CMD / `railway.json` start command | Groq or a networked Ollama |
 
 Streamlit Community Cloud runs **one process**, so a separate backend is impossible there. The UI
