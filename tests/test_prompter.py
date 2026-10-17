@@ -98,6 +98,29 @@ def test_build_prompt_uses_english_prompt_for_english_query():
     assert "who am i?" in package.user_prompt
 
 
+# ── Citation range ────────────────────────────────────────────────────────────
+#
+# The blocks are labelled [SOURCE 1]..[SOURCE N], but nothing told the model that
+# N was a ceiling, and a citation to [SOURCE 6] against five provided blocks
+# points a reader at a source that does not exist. Measured in ~1 run in 6.
+
+def test_user_prompt_states_the_citation_range():
+    query, script = _flow("who am i?")
+    package = build_prompt(query, [_chunk(), _chunk(), _chunk()], script)
+    assert "between 1 and 3" in package.user_prompt
+    assert "there are exactly 3 sources" in package.user_prompt
+
+
+def test_user_prompt_range_tracks_the_chunk_count():
+    query, script = _flow("who am i?")
+    assert "between 1 and 1" in build_prompt(query, [_chunk()], script).user_prompt
+
+
+def test_system_prompts_forbid_inventing_source_numbers():
+    for prompt in (_SYSTEM_PROMPT_TELUGU, _SYSTEM_PROMPT_ENGLISH, _SYSTEM_PROMPT_MIXED):
+        assert "Never invent a source number" in prompt
+
+
 # ── build_no_result_prompt ────────────────────────────────────────────────────
 
 def test_no_result_prompt_is_telugu_for_romanized_query():

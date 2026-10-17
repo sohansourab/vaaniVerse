@@ -40,7 +40,8 @@ STRICT RULES — follow without exception:
 3. Always cite your source using the label [SOURCE N] at the end of each claim.
 4. Preserve Telugu script exactly as it appears in the sources. Do not transliterate unless the user asked in Roman script.
 5. If the user query is in Romanized Telugu, respond in Telugu script.
-6. Never fabricate names, dates, verses, or historical facts."""
+6. Never fabricate names, dates, verses, or historical facts.
+7. Cite only the [SOURCE N] labels that appear in the SOURCE BLOCKS. Never invent a source number."""
 
 _SYSTEM_PROMPT_ENGLISH = """You are VāṇiVerse, a culturally aware AI assistant specializing in Indian linguistic heritage, with deep knowledge of Telugu literature and history.
 
@@ -50,7 +51,8 @@ STRICT RULES — follow without exception:
 3. If the answer is not found in the sources, respond exactly: "The requested information is not available in the provided sources."
 4. Always cite your source using the label [SOURCE N] at the end of each claim.
 5. Translate relevant Telugu passages from sources into English in your answer.
-6. Never fabricate names, dates, verses, or historical facts."""
+6. Never fabricate names, dates, verses, or historical facts.
+7. Cite only the [SOURCE N] labels that appear in the SOURCE BLOCKS. Never invent a source number."""
 
 _SYSTEM_PROMPT_MIXED = """You are VāṇiVerse, a bilingual AI assistant for Telugu and English queries about Indian linguistic and cultural heritage.
 
@@ -60,7 +62,8 @@ STRICT RULES — follow without exception:
 3. If the answer is not found in the sources, say so explicitly in the same language as the query.
 4. Always cite your source using the label [SOURCE N] at the end of each claim.
 5. Preserve Telugu script exactly when quoting from sources.
-6. Never fabricate names, dates, verses, or historical facts."""
+6. Never fabricate names, dates, verses, or historical facts.
+7. Cite only the [SOURCE N] labels that appear in the SOURCE BLOCKS. Never invent a source number."""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -149,12 +152,18 @@ def _format_context_block(chunks: list[RetrievedChunk]) -> str:
     return "\n\n".join(blocks)
 
 
-def _build_user_prompt(query: str, context_block: str) -> str:
+def _build_user_prompt(query: str, context_block: str, source_count: int) -> str:
     """
     Assembles the user-turn prompt with query + context block.
     The explicit instruction to cite sources is repeated here (in addition
     to the system prompt) because frontier LLMs sometimes ignore system
     prompt constraints under long context pressure.
+
+    `source_count` is stated numerically rather than left implicit: the blocks
+    are labelled [SOURCE 1]..[SOURCE N], but nothing told the model that N is a
+    ceiling, and a citation to [SOURCE 6] against five provided blocks points a
+    reader at a source that does not exist. Measured at roughly 1 run in 6 before
+    this bound was stated.
     """
     return (
         f"SOURCE BLOCKS:\n"
@@ -163,7 +172,8 @@ def _build_user_prompt(query: str, context_block: str) -> str:
         f"{'═' * 50}\n\n"
         f"QUERY: {query}\n\n"
         f"INSTRUCTION: Answer the query strictly using the SOURCE BLOCKS above. "
-        f"Cite each claim with [SOURCE N]. "
+        f"Cite each claim with [SOURCE N], where N is between 1 and {source_count} — "
+        f"there are exactly {source_count} sources and no others. "
         f"If the answer is absent from the sources, say so explicitly."
     )
 
@@ -209,7 +219,7 @@ def build_prompt(
     try:
         context_block  = _format_context_block(chunks)
         system_prompt  = _select_system_prompt(script, query)
-        user_prompt    = _build_user_prompt(query, context_block)
+        user_prompt    = _build_user_prompt(query, context_block, len(chunks))
     except Exception as exc:
         raise PromptConstructionError(
             "Failed to assemble prompt from retrieved chunks.",
