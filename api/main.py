@@ -14,6 +14,8 @@ from core.config import (
     DATA_DIR,
     GROQ_CONFIGURED,
     LLM_PROVIDER,
+    RERANK_ENABLED,
+    RERANK_THRESHOLD,
     SCORE_THRESHOLD,
     TOP_K,
 )
@@ -23,6 +25,7 @@ from core.exceptions import (
     LLMInferenceError,
     NoContextRetrievedError,
     PromptConstructionError,
+    RerankError,
     VectorStoreError,
 )
 from ingestion.chunker import chunk_document
@@ -103,11 +106,18 @@ app.add_middleware(
 # Schemas
 # ══════════════════════════════════════════════════════════════════════════════
 
+# `score_threshold` applies to whichever score ranks the results, so its default
+# has to move with that scale: cosine similarity when reranking is off, the
+# reranker's sigmoid score when it is on. Both are 0..1, but the same number
+# means different things on each scale.
+_DEFAULT_SCORE_THRESHOLD = RERANK_THRESHOLD if RERANK_ENABLED else SCORE_THRESHOLD
+
+
 class QueryRequest(BaseModel):
     query:           str   = Field(..., min_length=1, max_length=1000,
                                    description="Query in Telugu, Romanized Telugu, or English.")
     top_k:           int   = Field(default=TOP_K, ge=1, le=20)
-    score_threshold: float = Field(default=SCORE_THRESHOLD, ge=0.0, le=1.0)
+    score_threshold: float = Field(default=_DEFAULT_SCORE_THRESHOLD, ge=0.0, le=1.0)
     filter_source:   str | None = Field(default=None,
                                         description="Filter results to a specific source PDF filename.")
     provider:        str | None = Field(default=None,
@@ -116,11 +126,12 @@ class QueryRequest(BaseModel):
 
 
 class SourceReference(BaseModel):
-    chunk_id:    str
-    source:      str
-    page_number: int | str
-    score:       float
-    script:      str
+    chunk_id:        str
+    source:          str
+    page_number:     int | str
+    score:           float
+    retrieval_score: float = 0.0
+    script:          str
 
 
 class QueryResponse(BaseModel):
@@ -132,6 +143,7 @@ class QueryResponse(BaseModel):
     backend:       str
     sources_used:  list[SourceReference]
     total_chunks_retrieved: int
+    reranked:      bool = False
 
 
 class IngestResponse(BaseModel):
@@ -143,12 +155,13 @@ class IngestResponse(BaseModel):
 
 
 class SearchResult(BaseModel):
-    chunk_id:    str
-    text:        str
-    score:       float
-    source:      str
-    page_number: int | str
-    script:      str
+    chunk_id:        str
+    text:            str
+    score:           float
+    retrieval_score: float = 0.0
+    source:          str
+    page_number:     int | str
+    script:          str
 
 
 class SearchResponse(BaseModel):
@@ -156,6 +169,7 @@ class SearchResponse(BaseModel):
     query_script: str
     results:      list[SearchResult]
     total_results: int
+    reranked:     bool = False
 
 
 class HealthResponse(BaseModel):
@@ -334,6 +348,8 @@ async def query(request: QueryRequest) -> QueryResponse:
         raise HTTPException(status_code=503, detail=exc.message)
     except VectorStoreError as exc:
         raise HTTPException(status_code=500, detail=exc.message)
+    except RerankError as exc:
+        raise HTTPException(status_code=500, detail=exc.message)
 
     if not chunks:
         prompt   = build_no_result_prompt(normalized_query, script)
@@ -347,6 +363,7 @@ async def query(request: QueryRequest) -> QueryResponse:
             backend                = response.backend,
             sources_used           = [],
             total_chunks_retrieved = 0,
+            reranked               = store.reranking_active,
         )
 
     try:
@@ -361,11 +378,12 @@ async def query(request: QueryRequest) -> QueryResponse:
 
     sources = [
         SourceReference(
-            chunk_id    = s["chunk_id"],
-            source      = s["source"],
-            page_number = s["page_number"],
-            score       = s["score"],
-            script      = s["script"],
+            chunk_id        = s["chunk_id"],
+            source          = s["source"],
+            page_number     = s["page_number"],
+            score           = s["score"],
+            retrieval_score = s.get("retrieval_score", s["score"]),
+            script          = s["script"],
         )
         for s in response.sources_used
     ]
@@ -379,6 +397,7 @@ async def query(request: QueryRequest) -> QueryResponse:
         backend                = response.backend,
         sources_used           = sources,
         total_chunks_retrieved = len(chunks),
+        reranked               = store.reranking_active,
     )
 
 
@@ -386,12 +405,16 @@ async def query(request: QueryRequest) -> QueryResponse:
 async def search(
     q:               str   = Query(..., min_length=1, max_length=1000),
     top_k:           int   = Query(default=TOP_K, ge=1, le=20),
-    score_threshold: float = Query(default=SCORE_THRESHOLD, ge=0.0, le=1.0),
+    score_threshold: float = Query(default=_DEFAULT_SCORE_THRESHOLD, ge=0.0, le=1.0),
     filter_source:   str | None = Query(default=None),
 ) -> SearchResponse:
     """
     Pure semantic retrieval — returns matching chunks without LLM generation.
     Useful for debugging retrieval quality before adding the reasoning layer.
+
+    `score` is the score that ranked the result; `retrieval_score` is always the
+    dense-retrieval cosine similarity. They differ when `reranked` is true, in
+    which case `score` is the cross-encoder's and `score_threshold` applies to it.
     """
     store = _get_store()
 
@@ -411,17 +434,18 @@ async def search(
             score_threshold = score_threshold,
             filter_by       = filter_by,
         )
-    except (IndexNotFoundError, VectorStoreError) as exc:
+    except (IndexNotFoundError, VectorStoreError, RerankError) as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
     results = [
         SearchResult(
-            chunk_id    = chunk.chunk_id,
-            text        = chunk.text,
-            score       = chunk.score,
-            source      = chunk.metadata.get("source", "unknown"),
-            page_number = chunk.metadata.get("page_number", "?"),
-            script      = chunk.metadata.get("script", "unknown"),
+            chunk_id        = chunk.chunk_id,
+            text            = chunk.text,
+            score           = chunk.score,
+            retrieval_score = chunk.retrieval_score,
+            source          = chunk.metadata.get("source", "unknown"),
+            page_number     = chunk.metadata.get("page_number", "?"),
+            script          = chunk.metadata.get("script", "unknown"),
         )
         for chunk in chunks
     ]
@@ -431,6 +455,7 @@ async def search(
         query_script  = script,
         results       = results,
         total_results = len(results),
+        reranked      = store.reranking_active,
     )
 
 

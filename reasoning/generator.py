@@ -255,11 +255,15 @@ def _extract_source_metadata(package: PromptPackage) -> list[dict]:
     """
     return [
         {
-            "chunk_id":    chunk.chunk_id,
-            "source":      chunk.metadata.get("source", "unknown"),
-            "page_number": chunk.metadata.get("page_number", "?"),
-            "score":       round(chunk.score, 4),
-            "script":      chunk.metadata.get("script", "unknown"),
+            "chunk_id":        chunk.chunk_id,
+            "source":          chunk.metadata.get("source", "unknown"),
+            "page_number":     chunk.metadata.get("page_number", "?"),
+            "score":           round(chunk.score, 4),
+            # Dense-retrieval similarity. Equal to `score` unless a reranker
+            # re-ranked the candidates, in which case `score` is the
+            # cross-encoder's and this is what dense retrieval originally gave.
+            "retrieval_score": round(chunk.retrieval_score, 4),
+            "script":          chunk.metadata.get("script", "unknown"),
         }
         for chunk in package.context_chunks
     ]

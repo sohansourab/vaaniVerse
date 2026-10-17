@@ -58,6 +58,19 @@ SPACY_MODEL: str = os.getenv("SPACY_MODEL", "en_core_web_sm")         # fallback
 TOP_K: int = int(os.getenv("TOP_K", "5"))
 SCORE_THRESHOLD: float = float(os.getenv("SCORE_THRESHOLD", "0.45"))
 
+# ── Reranking (second-stage cross-encoder) ─────────────────────────────────────
+# Off by default, for two measured reasons rather than caution:
+#   * the reranker is a second ~2.3 GB model, and Streamlit Community Cloud's
+#     default RAM limit is too small to hold it alongside BGE-M3;
+#   * on this project's 4 GB GPU it would contend with BGE-M3 + the LLM.
+# RERANK_DEVICE therefore defaults to CPU even when the embedder is on GPU:
+# a cross-encoder over ~20 candidates is cheap, and OOM would break retrieval.
+RERANK_ENABLED: bool = os.getenv("RERANK_ENABLED", "false").lower() == "true"
+RERANK_MODEL: str = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+RERANK_DEVICE: str = os.getenv("RERANK_DEVICE", "cpu")
+RERANK_CANDIDATES: int = int(os.getenv("RERANK_CANDIDATES", "20"))  # retrieved before reranking
+RERANK_THRESHOLD: float = float(os.getenv("RERANK_THRESHOLD", "0.5"))  # swept, see docs/EVALUATION.md
+
 # ── OCR (scanned / image-only pages) ───────────────────────────────────────────
 # Whole-pipeline OCR is off the *embedding path*: it only ever runs for a page
 # whose text layer is empty or vestigial, so the existing text PDF is unaffected.

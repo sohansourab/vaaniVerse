@@ -16,6 +16,8 @@ from core.config import (
     QDRANT_COLLECTION,
     QDRANT_HOST,
     QDRANT_PORT,
+    RERANK_CANDIDATES,
+    RERANK_ENABLED,
     SCORE_THRESHOLD,
     TOP_K,
     VECTOR_BACKEND,
@@ -23,25 +25,45 @@ from core.config import (
 from core.exceptions import IndexNotFoundError, VectorStoreError
 from ingestion.chunker import TextChunk
 from retrieval.embeddings import EMBEDDING_DIM, embed_chunks, embed_query
+from retrieval.reranker import available as reranker_available
+from retrieval.reranker import probe as reranker_probe
+from retrieval.reranker import score_pairs
 
 logger = logging.getLogger(__name__)
+
+# Warn once, not once per query, when reranking is configured but unusable.
+_WARNED_NO_RERANKER = False
 
 
 # ── Result dataclass ───────────────────────────────────────────────────────────
 
 class RetrievedChunk:
-    __slots__ = ("chunk_id", "text", "score", "metadata")
+    __slots__ = ("chunk_id", "text", "score", "retrieval_score", "metadata")
 
-    def __init__(self, chunk_id: str, text: str, score: float, metadata: dict):
+    def __init__(
+        self,
+        chunk_id: str,
+        text: str,
+        score: float,
+        metadata: dict,
+        retrieval_score: float | None = None,
+    ):
         self.chunk_id = chunk_id
         self.text     = text
+        # `score` is whatever ranked this chunk — cosine similarity from dense
+        # retrieval, or the cross-encoder score once a reranker has run. It is
+        # the value `score_threshold` applies to.
         self.score    = score
+        # The original dense-retrieval similarity, kept separately so reranking
+        # never hides the first stage.
+        self.retrieval_score = score if retrieval_score is None else retrieval_score
         self.metadata = metadata
 
     def __repr__(self) -> str:
         return (
             f"RetrievedChunk(chunk_id={self.chunk_id!r}, "
             f"score={self.score:.4f}, "
+            f"retrieval_score={self.retrieval_score:.4f}, "
             f"source={self.metadata.get('source', '?')!r})"
         )
 
@@ -482,36 +504,116 @@ class VectorStore:
     ) -> list[RetrievedChunk]:
         """
         End-to-end query pipeline:
-            raw query string → embed → search → RetrievedChunk list
+            raw query text → embed → search → [rerank] → RetrievedChunk list
+
+        With reranking enabled this becomes two-stage:
+
+            embed → top RERANK_CANDIDATES by cosine, *no* cutoff
+                  → cross-encoder scores each (query, passage) pair
+                  → sort by that score, apply `score_threshold`, keep `top_k`
+
+        The cosine cutoff is deliberately not applied to the candidate set: a
+        passage the reranker would promote may sit below it, and that overlap is
+        precisely the failure the reranker exists to fix.
+
+        `score_threshold` always applies to the score that *ranks* the results —
+        cosine similarity with reranking off (unchanged behaviour), the
+        cross-encoder's sigmoid score with it on. Both are on a 0..1 scale, and
+        `RetrievedChunk.retrieval_score` always carries the cosine value.
 
         Args:
-            query_text:      Raw query (Telugu, Romanized, or English).
-                             Normalization happens inside embed_query() via
-                             normalizer.normalize() applied upstream in the
-                             API layer before this call.
-            top_k:           Max results.
-            score_threshold: Min cosine similarity.
+            query_text:      Query text (Telugu, Romanized, or English).
+                             Normalization happens upstream in the API layer,
+                             not here.
+            top_k:           Max results to return.
+            score_threshold: Relevance floor on the ranking score.
             filter_by:       Metadata filters (Qdrant only; ignored for FAISS).
 
         Returns:
             List of RetrievedChunk sorted by descending score.
+
+        Raises:
+            IndexNotFoundError: If the index is empty.
+            VectorStoreError:   On search failure.
+            RerankError:        If reranking is enabled and scoring fails.
         """
         query_vector = embed_query(query_text)
+        reranking    = self._reranking_active()
+
+        # Only widen the net when something is going to re-order it.
+        candidate_k         = max(top_k, RERANK_CANDIDATES) if reranking else top_k
+        candidate_threshold = 0.0 if reranking else score_threshold
 
         if self.backend == "faiss":
-            return self._store.search(
+            candidates = self._store.search(
                 query_vector    = query_vector,
-                top_k           = top_k,
-                score_threshold = score_threshold,
+                top_k           = candidate_k,
+                score_threshold = candidate_threshold,
             )
         else:
-            return self._store.search(
+            candidates = self._store.search(
                 query_vector    = query_vector,
-                top_k           = top_k,
-                score_threshold = score_threshold,
+                top_k           = candidate_k,
+                score_threshold = candidate_threshold,
                 filter_by       = filter_by,
             )
+
+        if not reranking or not candidates:
+            return candidates[:top_k]
+
+        return self._rerank(query_text, candidates, top_k, score_threshold)
+
+    @staticmethod
+    def _reranking_active() -> bool:
+        """
+        True when reranking is switched on *and* actually loadable.
+
+        A missing dependency degrades to dense-only retrieval with a single
+        warning: an operator's config flag should not be able to break every
+        query. A model that loads but then fails to score is a real error and is
+        allowed to propagate as RerankError.
+        """
+        global _WARNED_NO_RERANKER
+
+        if not RERANK_ENABLED:
+            return False
+        if reranker_available():
+            return True
+
+        if not _WARNED_NO_RERANKER:
+            logger.warning(
+                "RERANK_ENABLED is set but the reranker is unusable (%s); "
+                "falling back to dense-only retrieval.",
+                reranker_probe(),
+            )
+            _WARNED_NO_RERANKER = True
+        return False
+
+    @staticmethod
+    def _rerank(
+        query_text: str,
+        candidates: list[RetrievedChunk],
+        top_k: int,
+        score_threshold: float,
+    ) -> list[RetrievedChunk]:
+        """Re-score candidates with the cross-encoder, then rank and threshold."""
+        scores = score_pairs(query_text, [chunk.text for chunk in candidates])
+
+        for chunk, rerank_score in zip(candidates, scores):
+            chunk.retrieval_score = chunk.score    # preserve the dense score
+            chunk.score           = rerank_score   # this is what ranks now
+
+        ranked = sorted(candidates, key=lambda chunk: chunk.score, reverse=True)
+        return [chunk for chunk in ranked if chunk.score >= score_threshold][:top_k]
 
     @property
     def total_vectors(self) -> int:
         return self._store.total_vectors
+
+    @property
+    def reranking_active(self) -> bool:
+        """
+        Whether this store will rerank. Mirrors the per-query decision so API
+        responses can tell the client which scale `score` is on.
+        """
+        return self._reranking_active()

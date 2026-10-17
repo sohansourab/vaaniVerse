@@ -16,6 +16,8 @@ from retrieval.vector_store import RetrievedChunk
 class FakeStore:
     backend = "faiss"
     total_vectors = 5
+    # Mirrors VectorStore.reranking_active, which QueryResponse/SearchResponse report.
+    reranking_active = False
 
     def query(self, query_text, top_k, score_threshold, filter_by=None):
         return [

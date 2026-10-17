@@ -36,6 +36,9 @@ class VectorStoreError(VaaniverseBaseError):
 class IndexNotFoundError(VaaniverseBaseError):
     """Raised when a query is issued before any index has been built."""
 
+class RerankError(VaaniverseBaseError):
+    """Raised when the cross-encoder reranker fails to load or score a batch."""
+
 
 # ── Reasoning ─────────────────────────────────────────────────────────────────
 class LLMInferenceError(VaaniverseBaseError):
