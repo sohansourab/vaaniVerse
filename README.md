@@ -522,6 +522,7 @@ Detailed milestones with tasks and exit criteria live in [docs/ROADMAP.md](docs/
 | Document | Contents |
 | --- | --- |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Clean-architecture design, layer contracts, Indic-language policy, evaluation design |
+| [docs/DESIGN-NOTES.md](docs/DESIGN-NOTES.md) | Long-form design rationale (architecture blueprint, multilingual trade-offs, evaluation metrics) |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestone-based plan with engineering priorities and exit criteria |
 | [DEPLOY.md](DEPLOY.md) | Container and hosted deployment |
 | [VERIFY.md](VERIFY.md) | Verified local run: commands and observed output |
