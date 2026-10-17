@@ -130,7 +130,7 @@ flowchart LR
 | --- | --- | --- |
 | **Local** | `uvicorn api.main:app` as a separate process | Ollama (offline, private) |
 | **Streamlit Cloud** · [live ↗](https://vaaniverse-27.streamlit.app/) | `frontend/app.py` calls `ensure_api_ready()`, which boots uvicorn on a daemon thread inside the Streamlit process | Groq (no local GPU/Ollama available) |
-| **Container** | `Dockerfile` CMD / `railway.json` start command | Groq or a networked Ollama |
+| **Container** | `Dockerfile` + `docker run`, or any platform that injects `$PORT` | Groq or a networked Ollama |
 
 Streamlit Community Cloud runs **one process**, so a separate backend is impossible there. The UI
 therefore detects a missing API and starts one in-process — this is why `frontend/app.py` imports
@@ -530,7 +530,6 @@ vaaniVerse/
 │   └── ROADMAP.md              # milestones and exit criteria
 ├── .streamlit/config.toml      # UI theme
 ├── Dockerfile                  # two-stage, non-root container
-├── railway.json                # container deploy config
 ├── requirements.txt            # runtime deps
 ├── requirements-dev.txt        # pytest
 └── .env.example                # config template (no secrets)

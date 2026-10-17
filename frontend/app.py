@@ -492,6 +492,19 @@ with st.sidebar:
         # UI, explains why.
         provider_options = ["ollama", "groq"]
 
+    if not ollama_ok and not groq_ok:
+        # Say this before the user asks something, not after it fails. A hosted
+        # deployment with no secret configured has no working provider at all,
+        # and "Ollama API call failed" (the product default) explains nothing to
+        # someone who has never heard of Ollama.
+        st.warning(
+            "**No LLM provider is configured.** No Ollama server answered on this "
+            "host, and `GROQ_API_KEY` is not set — so answers will fail.\n\n"
+            "On Streamlit Community Cloud, add it under "
+            "**App → Settings → Secrets**:\n\n"
+            '```toml\nGROQ_API_KEY = "gsk_..."\n```'
+        )
+
     provider_default = health.get("llm_default", "ollama")
     provider_choice = st.selectbox(
         "LLM provider",

@@ -44,5 +44,5 @@ USER appuser
 
 EXPOSE 8000
 
-# Railway/fly inject PORT; fall back to 8000 locally.
+# The platform may inject PORT; fall back to 8000 locally.
 CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
