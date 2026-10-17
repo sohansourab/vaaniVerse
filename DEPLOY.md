@@ -44,7 +44,7 @@ put them in `Dockerfile`, `railway.json`, or any committed file.
 |----------|---------|---------|
 | `LLM_PROVIDER` | `groq` or `ollama` | **Default** provider when a request omits `provider`. |
 | `GROQ_API_KEY` | *(secret)* | Required only for the `groq` provider. Empty ⇒ Groq requests return **503**. |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model id. |
+| `GROQ_MODEL` | `qwen/qwen3.8-27b` | Groq model id. Groq retires ids over time — a retired one fails with `404 model_not_found`, which the API now reports verbatim. |
 | `OLLAMA_BASE_URL` | `https://<tunnel-host>` (Option A) | Reachable Ollama endpoint (local or tunnelled). |
 | `OLLAMA_MODEL` | `qwen2.5:3b` | Ollama model id. |
 | `VECTOR_BACKEND` | `faiss` | Vector store backend. |
@@ -54,8 +54,9 @@ put them in `Dockerfile`, `railway.json`, or any committed file.
 
 > The API is designed to **start even when a backend is unavailable**. Selecting
 > `groq` without `GROQ_API_KEY` returns `503` at request time; it never crashes boot.
-> `GET /health` reports `llm_default` and `groq_configured` (boolean, no
-> reachability check) so you can confirm configuration from the dashboard.
+> `GET /health` reports `llm_default`, `groq_configured` and `ollama_reachable` so you
+> can confirm configuration from the dashboard — and so a client can avoid
+> offering a provider this host cannot serve.
 
 ---
 
@@ -161,7 +162,7 @@ tailscale funnel 11434          # only if you need public exposure
 ```
 LLM_PROVIDER=groq
 GROQ_API_KEY=<set in dashboard, never committed>
-GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODEL=qwen/qwen3.8-27b
 OLLAMA_BASE_URL=https://<your-tunnel-host>
 OLLAMA_MODEL=qwen2.5:3b
 EMBEDDING_DEVICE=cpu
@@ -192,7 +193,7 @@ Simplest and most reliable production shape: no dependency on your PC.
 ```
 LLM_PROVIDER=groq
 GROQ_API_KEY=<set in dashboard>
-GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODEL=qwen/qwen3.8-27b
 EMBEDDING_DEVICE=cpu
 ```
 

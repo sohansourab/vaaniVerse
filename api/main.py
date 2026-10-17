@@ -1,5 +1,6 @@
 import re
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -31,7 +32,7 @@ from core.exceptions import (
 from ingestion.chunker import chunk_document
 from ingestion.normalizer import detect_script, normalize
 from ingestion.parser import parse_document
-from reasoning.generator import SUPPORTED_PROVIDERS, Generator
+from reasoning.generator import SUPPORTED_PROVIDERS, Generator, ollama_reachable
 from reasoning.prompter import build_no_result_prompt, build_prompt
 from retrieval.vector_store import VectorStore
 
@@ -179,6 +180,9 @@ class HealthResponse(BaseModel):
     llm_backend:   str
     llm_default:   str
     groq_configured: bool
+    # Ollama is only a usable provider where an Ollama server exists. Clients use
+    # this to avoid offering (or defaulting to) a provider that cannot answer.
+    ollama_reachable: bool = True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -195,6 +199,25 @@ def _get_generator() -> Generator:
     if _generator is None:
         raise HTTPException(status_code=503, detail="LLM generator not initialized.")
     return _generator
+
+
+# The frontend polls /health; probing Ollama on every poll would be wasteful, and
+# a provider does not appear or vanish mid-session. Cache the answer briefly.
+_OLLAMA_PROBE_TTL_S = 30.0
+_ollama_probe_cache: tuple[float, bool] | None = None
+
+
+def _ollama_reachable_cached() -> bool:
+    """Whether an Ollama server answers, re-probed at most once per TTL."""
+    global _ollama_probe_cache
+
+    now = time.monotonic()
+    if _ollama_probe_cache and (now - _ollama_probe_cache[0]) < _OLLAMA_PROBE_TTL_S:
+        return _ollama_probe_cache[1]
+
+    reachable = ollama_reachable()
+    _ollama_probe_cache = (now, reachable)
+    return reachable
 
 
 def _normalize_query(query: str) -> tuple[str, str]:
@@ -235,6 +258,7 @@ async def health() -> HealthResponse:
         llm_backend     = default_provider,
         llm_default     = default_provider,
         groq_configured = GROQ_CONFIGURED,
+        ollama_reachable = _ollama_reachable_cached(),
     )
 
 

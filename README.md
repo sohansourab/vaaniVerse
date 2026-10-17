@@ -325,14 +325,16 @@ curl -s http://localhost:8000/query \
   "answer": "…grounded answer with [SOURCE 3] citations…",
   "query": "నేను ఎవరు?",
   "query_script": "telugu",
-  "model": "llama-3.3-70b-versatile",
+  "model": "qwen/qwen3.8-27b",
   "provider": "groq",
   "backend": "groq",
   "sources_used": [
     { "chunk_id": "book_p1_0", "source": "book.pdf",
-      "page_number": 1, "score": 0.6207, "script": "telugu" }
+      "page_number": 1, "score": 0.995, "retrieval_score": 0.6207,
+      "script": "telugu" }
   ],
-  "total_chunks_retrieved": 5
+  "total_chunks_retrieved": 5,
+  "reranked": true
 }
 ```
 
@@ -371,7 +373,7 @@ Every setting is environment-driven (`core/config.py`). Copy `.env.example` → 
 | `OLLAMA_MODEL` | `llama3` | `.env.example` ships `qwen2.5:3b` (fits a 4 GB GPU) |
 | `OLLAMA_TEMPERATURE` | `0.2` | |
 | `GROQ_API_KEY` | *(empty)* | Supply via environment/secret store only |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | |
+| `GROQ_MODEL` | `qwen/qwen3.8-27b` | Groq retires model ids; list current ones in their console |
 | `GROQ_MAX_TOKENS` / `GROQ_TEMPERATURE` | `1024` / `0.2` | |
 | `VECTOR_BACKEND` | `faiss` | `faiss` \| `qdrant` |
 | `EMBEDDING_MODEL_NAME` | `BAAI/bge-m3` | |
@@ -585,7 +587,7 @@ These are real and worth knowing before you rely on the system:
    spacing artifacts (e.g. `మ ైన` for `మైన`). Normalization repairs structural damage, but it cannot
    recover text that was never extracted correctly. This measurably weakens embeddings.
 3. **The local default model is small.** `qwen2.5:3b` produces repetitive, awkward Telugu. Wiring is
-   correct; generation quality is a model-size question. `llama-3.3-70b-versatile` via Groq is
+   correct; generation quality is a model-size question. `qwen/qwen3.8-27b` via Groq is
    substantially better.
 4. **Qdrant is implemented but not integration-tested.** FAISS is the tested path.
 5. **FAISS is in-memory and single-process.** No concurrency story, no scale-out, and no native

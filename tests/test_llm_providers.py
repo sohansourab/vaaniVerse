@@ -12,6 +12,7 @@ from reasoning.generator import (
     Generator,
     GroqProvider,
     OllamaProvider,
+    ollama_reachable,
 )
 from reasoning.prompter import PromptPackage
 from retrieval.vector_store import RetrievedChunk
@@ -120,7 +121,7 @@ def test_groq_provider_generate(monkeypatch):
 
     monkeypatch.setattr("reasoning.generator.Groq", lambda api_key=None: _Client())
 
-    provider = GroqProvider(api_key="dummy-key", model="llama-3.3-70b-versatile")
+    provider = GroqProvider(api_key="dummy-key", model="qwen/qwen3.8-27b")
     assert provider.generate("hi", system_prompt="S") == "groq answer"
 
 
@@ -159,3 +160,50 @@ def test_generator_rejects_unknown_provider():
     gen = Generator(provider="ollama")
     with pytest.raises(LLMInferenceError):
         gen.get_provider("bogus")
+
+
+# ── ollama_reachable ───────────────────────────────────────────────────────────
+# The probe decides whether Ollama is offered as a provider at all, so it must
+# answer a plain bool and never raise — including when the host is offline.
+
+def test_ollama_reachable_true_on_200(monkeypatch):
+    seen = {}
+
+    def fake_get(url, timeout=None):
+        seen["url"] = url
+        seen["timeout"] = timeout
+        return _FakeResp({"models": []}, status=200)
+
+    monkeypatch.setattr("reasoning.generator.httpx.get", fake_get)
+
+    assert ollama_reachable("http://localhost:11434") is True
+    # Trailing slash must not produce a double slash.
+    assert seen["url"] == "http://localhost:11434/api/tags"
+    assert seen["timeout"] is not None
+
+
+def test_ollama_reachable_strips_trailing_slash(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        "reasoning.generator.httpx.get",
+        lambda url, timeout=None: seen.update(url=url) or _FakeResp({}, status=200),
+    )
+
+    ollama_reachable("http://localhost:11434/")
+    assert seen["url"] == "http://localhost:11434/api/tags"
+
+
+def test_ollama_reachable_false_on_error_status(monkeypatch):
+    monkeypatch.setattr(
+        "reasoning.generator.httpx.get",
+        lambda url, timeout=None: _FakeResp({}, status=500),
+    )
+    assert ollama_reachable() is False
+
+
+def test_ollama_reachable_false_when_connection_fails(monkeypatch):
+    def boom(url, timeout=None):
+        raise ConnectionRefusedError("nothing listening")
+
+    monkeypatch.setattr("reasoning.generator.httpx.get", boom)
+    assert ollama_reachable() is False

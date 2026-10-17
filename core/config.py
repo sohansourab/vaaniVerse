@@ -39,7 +39,14 @@ LLM_BACKEND: str = LLM_PROVIDER                                       # legacy a
 
 # ── Groq (opt-in; key comes from the environment only) ─────────────────────────
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# Groq retires model ids on its own schedule: `llama-3.3-70b-versatile` was the
+# default here until it began returning 404 model_not_found. This replacement was
+# picked on measurement — fastest of the models the key can see (~190 ms vs
+# ~1000 ms), and unlike the gpt-oss models it honours the literal [SOURCE n]
+# citation markers the prompt asks for instead of translating them. If Groq
+# retires this one too, list what is currently available:
+#   https://console.groq.com/docs/models
+GROQ_MODEL: str = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
 GROQ_MAX_TOKENS: int = int(os.getenv("GROQ_MAX_TOKENS", "1024"))
 GROQ_TEMPERATURE: float = float(os.getenv("GROQ_TEMPERATURE", "0.2"))
 GROQ_CONFIGURED: bool = bool(GROQ_API_KEY)

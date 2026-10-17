@@ -476,14 +476,30 @@ with st.sidebar:
         help        = "Restrict retrieval to a specific document.",
     )
 
-    provider_options = ["ollama", "groq"]
-    provider_default = (health or {}).get("llm_default", "ollama")
+    # Only offer providers this server can actually serve. Where there is no
+    # local Ollama — Streamlit Community Cloud, for example — listing it just
+    # produces a confusing failure at query time. Filtering it out here also lets
+    # the default fall through to Groq, if a key is configured.
+    health = health or {}
+    ollama_ok = bool(health.get("ollama_reachable", True))
+    groq_ok   = bool(health.get("groq_configured", False))
+
+    provider_options = [
+        name for name, usable in (("ollama", ollama_ok), ("groq", groq_ok)) if usable
+    ]
+    if not provider_options:
+        # Neither works; keep both listed so the server's error message, not the
+        # UI, explains why.
+        provider_options = ["ollama", "groq"]
+
+    provider_default = health.get("llm_default", "ollama")
     provider_choice = st.selectbox(
         "LLM provider",
         options = provider_options,
         index   = provider_options.index(provider_default)
                   if provider_default in provider_options else 0,
-        help    = "Ollama runs locally (default). Groq requires GROQ_API_KEY on the API server.",
+        help    = "Only providers this server can serve are listed. "
+                  "Ollama needs a local server; Groq needs GROQ_API_KEY.",
     )
 
     st.markdown('<div class="vv-divider">॥</div>', unsafe_allow_html=True)
@@ -551,7 +567,16 @@ if prompt := st.chat_input(
             st.stop()
 
         if "detail" in data:
-            st.error(f"API error: {data['detail']}")
+            detail = data["detail"]
+            st.error(f"API error: {detail}")
+            if "Ollama" in detail:
+                probe = get_health() or {}
+                if not probe.get("ollama_reachable", True):
+                    st.info(
+                        "This deployment has no local Ollama server. Pick **groq** "
+                        "as the LLM provider in the sidebar — the server needs a "
+                        "`GROQ_API_KEY` secret for it to work."
+                    )
             st.stop()
 
         answer  = data.get("answer", "No answer generated.")

@@ -24,6 +24,29 @@ logger = logging.getLogger(__name__)
 SUPPORTED_PROVIDERS: tuple[str, ...] = ("ollama", "groq")
 
 
+def ollama_reachable(
+    base_url: str   = OLLAMA_BASE_URL,
+    timeout:  float = 1.0,
+) -> bool:
+    """
+    Cheap liveness probe against an Ollama server's `/api/tags`.
+
+    Ollama is the product default, but it is only a *possible* provider where an
+    Ollama server actually exists. On a host without one — Streamlit Community
+    Cloud, for instance — offering it as a choice fails at query time with a
+    bare "Ollama API call failed." instead of at selection time, which reads as
+    a broken app rather than a missing prerequisite.
+
+    Never raises: an unreachable, refused, or malformed response simply means
+    "no". Callers decide what to do with that.
+    """
+    try:
+        response = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=timeout)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
 # ── Response dataclass ─────────────────────────────────────────────────────────
 
 @dataclass
@@ -129,8 +152,10 @@ class OllamaProvider(LLMProvider):
                 details={"model": self._model, "base_url": self._base_url},
             ) from exc
         except Exception as exc:
+            # Name the endpoint: on a hosted deployment the usual cause is that
+            # nothing is listening on the configured OLLAMA_BASE_URL at all.
             raise LLMInferenceError(
-                "Ollama API call failed.",
+                f"Ollama API call failed at {self._base_url}: {str(exc)[:200]}",
                 details={"model": self._model, "base_url": self._base_url, "error": str(exc)},
             ) from exc
 
@@ -222,8 +247,12 @@ class GroqProvider(LLMProvider):
                 temperature = self._temperature,
             )
         except Exception as exc:
+            # The model id and the provider's own message are the two things that
+            # actually explain a failure here — a retired model id, a revoked key,
+            # a rate limit. A bare "Groq API call failed." tells the operator
+            # nothing, and is what a dead default model looks like from outside.
             raise LLMInferenceError(
-                "Groq API call failed.",
+                f"Groq API call failed for model '{self._model}': {str(exc)[:200]}",
                 details={"model": self._model, "error": str(exc)},
             ) from exc
 

@@ -11,10 +11,11 @@ data/
 
 # Evaluation outputs: they contain model answers grounded in the book text,
 # which must never be committed. eval/gold_qa.jsonl (our own questions) IS tracked.
-eval/results.json
-eval/results.jsonl
-# OCR evaluation output embeds transcribed dataset text, so it stays out too.
-eval/ocr_results.json
+# Ignored by extension rather than filename so that adding a new harness cannot
+# silently start committing its results.
+eval/*.json
+eval/*.jsonl
+!eval/gold_qa.jsonl
 
 # Partially-downloaded files (browser .crdownload / temp) — datasets and models
 # are large and must never be committed.
