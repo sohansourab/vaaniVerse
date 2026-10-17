@@ -5,8 +5,10 @@ from pathlib import Path
 import fitz  # PyMuPDF
 from PIL import Image
 
-from core.exceptions import DocumentParseError, UnsupportedFileTypeError
+from core import config
+from core.exceptions import DocumentParseError, OCREngineError, UnsupportedFileTypeError
 from ingestion.normalizer import normalize
+from ingestion.ocr import OCRResult, ocr_image, resolve_engine
 
 SUPPORTED_EXTENSIONS = {".pdf"}
 
@@ -84,13 +86,34 @@ def _extract_text_from_page(page: fitz.Page) -> str:
     return text
 
 
-def parse_document(file_path: str | Path, extract_images: bool = True) -> ParsedDocument:
+def _page_to_image(page: fitz.Page, dpi: int) -> Image.Image:
+    """
+    Rasterize a page to a PIL image for OCR.
+
+    PyMuPDF hands back raw pixel samples, so the array is wrapped rather than
+    encoded — no temporary file is ever written.
+    """
+    zoom   = dpi / 72.0
+    pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+    return Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+
+
+def parse_document(
+    file_path: str | Path,
+    extract_images: bool = True,
+    ocr: bool | None = None,
+) -> ParsedDocument:
     """
     Entry point for the ingestion parser.
 
     Args:
         file_path:       Absolute or relative path to a PDF file.
         extract_images:  Whether to extract embedded images per page.
+        ocr:             OCR policy for pages with no usable text layer.
+                           None (default) — follow ``config.OCR_ENABLED``; if no
+                             engine is installed, degrade instead of failing.
+                           True  — require OCR; raise when no engine is usable.
+                           False — never OCR.
 
     Returns:
         ParsedDocument containing all pages with text and image data.
@@ -98,6 +121,7 @@ def parse_document(file_path: str | Path, extract_images: bool = True) -> Parsed
     Raises:
         UnsupportedFileTypeError: If the file is not a supported type.
         DocumentParseError:       If PyMuPDF cannot open or read the file.
+        OCREngineError:           If ``ocr=True`` and no engine is usable.
     """
     path = Path(file_path)
 
@@ -133,6 +157,25 @@ def parse_document(file_path: str | Path, extract_images: bool = True) -> Parsed
         doc_metadata = doc_metadata,
     )
 
+    # Resolve OCR once per document — probing an engine imports torch, so this
+    # must not happen inside the page loop.
+    ocr_requested   = config.OCR_ENABLED if ocr is None else ocr
+    ocr_engine: str | None    = None
+    ocr_unavailable: str | None = None
+    if ocr_requested:
+        try:
+            ocr_engine = resolve_engine(config.OCR_ENGINE)
+        except OCREngineError as exc:
+            if ocr is True:
+                doc.close()
+                raise
+            # Default policy: a missing engine must not break ingestion of
+            # text PDFs. Record why, then carry on with the text layer alone.
+            ocr_requested   = False
+            ocr_unavailable = f"{exc.message} {exc.details}"
+
+    ocr_pages = 0
+
     for page_index in range(doc.page_count):
         try:
             page = doc[page_index]
@@ -143,6 +186,21 @@ def parse_document(file_path: str | Path, extract_images: bool = True) -> Parsed
             )
 
         raw_text        = _extract_text_from_page(page)
+        ocr_result: OCRResult | None = None
+
+        # A page with no text layer is a scan. A page with a *vestigial* one — a
+        # stray page number — is also a scan, which is why this is a character
+        # threshold and not a truthiness check.
+        if ocr_requested and len(raw_text) < config.OCR_MIN_CHARS:
+            ocr_result = ocr_image(
+                _page_to_image(page, config.OCR_DPI),
+                engine=ocr_engine,
+                lang=config.OCR_LANG,
+            )
+            if ocr_result.text.strip():
+                raw_text = ocr_result.text.strip()
+                ocr_pages += 1
+
         normalized_text = normalize(raw_text, transliterate=True)
         images          = _extract_images_from_page(page, doc) if extract_images else []
 
@@ -153,13 +211,19 @@ def parse_document(file_path: str | Path, extract_images: bool = True) -> Parsed
                 normalized_text = normalized_text,
                 images          = images,
                 metadata        = {
-                    "source":      path.name,
-                    "page_number": page_index + 1,
-                    "total_pages": doc.page_count,
-                    "has_images":  len(images) > 0,
+                    "source":         path.name,
+                    "page_number":    page_index + 1,
+                    "total_pages":    doc.page_count,
+                    "has_images":     len(images) > 0,
+                    "ocr_engine":     ocr_result.engine if ocr_result else None,
+                    "ocr_confidence": ocr_result.mean_confidence if ocr_result else None,
                 },
             )
         )
+
+    doc_metadata["ocr_engine"]      = ocr_engine
+    doc_metadata["ocr_pages"]       = ocr_pages
+    doc_metadata["ocr_unavailable"] = ocr_unavailable
 
     doc.close()
     return parsed_doc

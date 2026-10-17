@@ -1,0 +1,17 @@
+# Optional OCR engines for scanned / image-only PDFs.
+#
+# Kept out of requirements.txt on purpose: easyocr pulls opencv, scikit-image
+# and more, which would slow every install and the Streamlit Cloud build for a
+# pipeline that does not need OCR on a text PDF.
+#
+#   pip install -r requirements-ocr.txt
+#
+# Tesseract also needs its own binary and the Telugu model. On Debian/Ubuntu
+# (and Streamlit Cloud, via packages.txt):  apt-get install tesseract-ocr tesseract-ocr-tel
+# On Windows: winget install UB-Mannheim.TesseractOCR
+# If it is not on PATH, point at it with TESSERACT_CMD.
+#
+# Only engines with verified Telugu support are listed. PaddleOCR is not here:
+# it ships no Telugu dictionary.
+pytesseract
+easyocr

@@ -58,6 +58,15 @@ SPACY_MODEL: str = os.getenv("SPACY_MODEL", "en_core_web_sm")         # fallback
 TOP_K: int = int(os.getenv("TOP_K", "5"))
 SCORE_THRESHOLD: float = float(os.getenv("SCORE_THRESHOLD", "0.45"))
 
+# ── OCR (scanned / image-only pages) ───────────────────────────────────────────
+# Whole-pipeline OCR is off the *embedding path*: it only ever runs for a page
+# whose text layer is empty or vestigial, so the existing text PDF is unaffected.
+OCR_ENABLED: bool = os.getenv("OCR_ENABLED", "true").lower() == "true"
+OCR_ENGINE: str = os.getenv("OCR_ENGINE", "auto")        # auto | tesseract | easyocr
+OCR_LANG: str = os.getenv("OCR_LANG", "te,en")           # ISO 639-1; engine codes mapped internally
+OCR_DPI: int = int(os.getenv("OCR_DPI", "200"))          # page rasterization resolution
+OCR_MIN_CHARS: int = int(os.getenv("OCR_MIN_CHARS", "16"))  # under this, a page counts as image-only
+
 # ── API ────────────────────────────────────────────────────────────────────────
 API_HOST: str = os.getenv("API_HOST", "0.0.0.0")
 API_PORT: int = int(os.getenv("API_PORT", "8000"))

@@ -22,6 +22,9 @@ class ChunkingError(VaaniverseBaseError):
 class NormalizationError(VaaniverseBaseError):
     """Raised when Unicode normalization or transliteration fails."""
 
+class OCREngineError(VaaniverseBaseError):
+    """Raised when no OCR engine is usable, or the selected engine fails."""
+
 
 # ── Retrieval ──────────────────────────────────────────────────────────────────
 class EmbeddingError(VaaniverseBaseError):

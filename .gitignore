@@ -13,6 +13,8 @@ data/
 # which must never be committed. eval/gold_qa.jsonl (our own questions) IS tracked.
 eval/results.json
 eval/results.jsonl
+# OCR evaluation output embeds transcribed dataset text, so it stays out too.
+eval/ocr_results.json
 
 # Partially-downloaded files (browser .crdownload / temp) — datasets and models
 # are large and must never be committed.
