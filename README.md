@@ -1,717 +1,563 @@
 <div align="center">
 
-<img src="https://github.com/sohansourab/vaaniVerse/blob/main/logo.png?raw=true" width="500" alt="VaaniVerse logo" />
-
-<br/>
-
-</div>
-
-### Reimagining Cultural Knowledge Retrieval for India's Linguistic Diversity
-
-[![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.111-green?logo=fastapi)](https://fastapi.tiangolo.com)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.58-red?logo=streamlit)](https://streamlit.io)
-[![BGE-M3](https://img.shields.io/badge/Embedding-BGE--M3-orange)](https://huggingface.co/BAAI/bge-m3)
-[![License](https://img.shields.io/badge/License-MIT-purple)](LICENSE)
-
----
+<img src="logo.png" width="440" alt="VāṇiVerse logo" />
 
 # VāṇiVerse
 
-### Reimagining Cultural Knowledge Retrieval for India's Linguistic Diversity
+**Source-grounded retrieval and reasoning for India's linguistic heritage.**
 
-VāṇiVerse is an open-source multilingual Retrieval-Augmented Generation (RAG) , platform designed to preserve, explore, and interact with India's vast linguistic and cultural knowledge through Artificial Intelligence.
+`తెలుగు` · *Romanized Telugu* · English
 
-Modern AI systems perform exceptionally well on globally digitized content but struggle with regional languages, transliterated text, historical documents, manuscripts, and culturally specific knowledge sources. VāṇiVerse addresses this challenge by combining multilingual retrieval, document intelligence, semantic search, and culturally-aware AI reasoning into a unified knowledge platform.
+<br/>
 
-The project begins with Telugu language support and is designed to scale across Indic languages and heritage datasets.
+[![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.66-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io)
+[![Embeddings](https://img.shields.io/badge/Embeddings-BGE--M3-orange)](https://huggingface.co/BAAI/bge-m3)
+[![Vectors](https://img.shields.io/badge/Vectors-FAISS-yellow)](https://github.com/facebookresearch/faiss)
+[![LLM](https://img.shields.io/badge/LLM-Ollama%20%7C%20Groq-8A2BE2)](https://groq.com)
+[![Tests](https://img.shields.io/badge/tests-15%20passing-brightgreen)](#testing)
+[![License](https://img.shields.io/badge/License-MIT-purple)](LICENSE)
 
----
-
-## Vision
-
-India possesses centuries of knowledge distributed across:
-
-* Regional literature
-* Manuscripts and inscriptions
-* Religious and philosophical texts
-* Educational archives
-* Community-generated knowledge repositories
-
-Much of this information remains inaccessible to modern AI systems due to language diversity, script variations, and limited digitization.
-
-VāṇiVerse aims to bridge this gap by creating an AI-powered cultural knowledge retrieval ecosystem capable of understanding, retrieving, and reasoning over multilingual heritage content.
+</div>
 
 ---
 
-## Key Challenges
+## What is VāṇiVerse
 
-| Challenge                | Example                                                                           |
-| ------------------------ | --------------------------------------------------------------------------------- |
-| Linguistic Fragmentation | `rama evaru` and `రామ ఎవరు` represent the same query in different scripts         |
-| Script Variability       | Telugu, Romanized Telugu, and mixed-language inputs                               |
-| Cultural Context Loss    | Heritage documents contain concepts poorly represented in modern datasets         |
-| Preservation Gap         | Large collections remain available only as scanned documents or physical archives |
+VāṇiVerse is a **multilingual Retrieval-Augmented Generation (RAG)** platform for Telugu and
+other Indic heritage content. Ask a question in **Telugu**, **Romanized Telugu**, or **English**
+and get an answer built *only* from retrieved source passages, with the source and page cited.
 
----
+Modern retrieval systems are built for globally digitised, script-uniform text. Heritage corpora
+break that assumption: the same query arrives as `రామ ఎవరు` or `rama evaru`, PDF extraction mangles
+Telugu conjuncts, and the "right answer" is often a passage rather than a fact. VāṇiVerse treats
+those as first-class problems.
 
-## Core Features
+| The problem | What VāṇiVerse does |
+| --- | --- |
+| Same query, different scripts | Script detection + Romanized-Telugu transliteration before embedding |
+| Telugu PDFs extract badly | Unicode artifact repair (duplicate matras, broken conjuncts, zero-width chars) |
+| Generic splitting destroys context | Sentence-aware, overlap-aware chunking with per-chunk metadata |
+| Model answers from memory | Evidence-only prompting; abstains when sources don't cover the question |
+| Answers can't be verified | Every response returns `sources_used` with source, page, and score |
 
-### Multilingual Retrieval
-
-* Native Telugu support
-* Romanized Telugu query understanding
-* English query support
-* Script-aware retrieval pipeline
-
-### Cultural Knowledge Search
-
-* Source-grounded answers
-* Citation-backed responses
-* Hallucination-resistant prompting
-* Heritage-focused document retrieval
-
-### Document Intelligence
-
-* PDF ingestion and parsing
-* Unicode normalization
-* Script detection
-* Semantic chunk generation
-
-### Flexible AI Backends
-
-* Groq-powered online inference
-* Ollama-powered local inference (offline fallback)
-* FAISS-backed vector retrieval (default, fully tested)
-* Qdrant backend implemented for production scale-out — integration testing in progress
-
-### Production-Ready API
-
-* FastAPI backend
-* RESTful endpoints
-* Modular architecture
-* Extensible ingestion pipeline
+> **Status:** Phase 1 complete — the end-to-end pipeline runs, the API and UI are live, and the
+> provider switch (Ollama ⇆ Groq) is implemented and tested. OCR and multi-language expansion are
+> roadmap items, not shipped features. See [Known limitations](#known-limitations).
 
 ---
 
-## System Architecture
+## Architecture
 
-```text
-Document
-   │
-   ▼
-Parser
-   │
-   ▼
-Normalizer
-   │
-   ▼
-Chunker
-   │
-   ▼
-BGE-M3 Embeddings
-   │
-   ▼
-FAISS (active backend)
-   │
-   ▼
-Retriever
-   │
-   ▼
-Prompt Builder
-   │
-   ▼
-LLM (Groq / Ollama)
-   │
-   ▼
-Grounded Response + Citations
+The codebase is split into four responsibilities — **interface → application → domain → infrastructure** —
+so that swapping the vector store, the embedding model, or the LLM never touches HTTP code.
+
+```mermaid
+flowchart LR
+    UI["🖥️ Streamlit UI<br/>frontend/app.py"] -->|HTTP| API["⚡ FastAPI<br/>api/main.py"]
+    CLI["🖥️ Ingestion CLI<br/>scripts/ingest_documents.py"] --> PRS
+
+    subgraph INGEST["📥 Ingest path"]
+        direction LR
+        PRS["Parser"] --> NRM["Normalizer"] --> CHK["Chunker"] --> EMB["BGE-M3<br/>embeddings.py"]
+    end
+
+    subgraph QUERY["🔎 Query path"]
+        direction LR
+        VEC["Vector store<br/>vector_store.py"] --> PRM["Prompter"] --> GEN["Generator"]
+    end
+
+    API --> PRS
+    API --> VEC
+    EMB --> VEC
+    VEC <--> FILES[("💾 faiss + pkl<br/>data/vectors")]
+    EMB -.->|weights| HF["🌐 Hugging Face<br/>BAAI/bge-m3"]
+    PRM -.->|grounded prompt| GEN
+    GEN -.-> OLL["🌐 Ollama"]
+    GEN -.-> GRQ["🌐 Groq"]
 ```
 
+**The layers, and why they are drawn this way:** `api/main.py` owns orchestration — it imports
+every service but no service imports it. `VectorStore` hides FAISS vs Qdrant behind one interface,
+and `Generator` hides Ollama vs Groq behind another. Nothing in the API or UI knows which backend
+is active; that decision lives in `core/config.py` (`LLM_PROVIDER`) and in the per-request payload.
+
 ---
 
-## Clean Architecture Blueprint for Indic-Language RAG
+## Deployment topologies
 
-VāṇiVerse already has a strong RAG foundation. The current repository clearly follows the right direction: script-aware normalization, Telugu-aware chunking, multilingual embeddings, FAISS retrieval, and grounded generation. The next step is to formalize the architecture according to clean architecture principles so the system remains modular, maintainable, and extensible for India's diverse linguistic ecosystems.
+The UI talks to the API over HTTP on `http://localhost:8000`. Where that API runs is a deployment
+choice, and the app supports all three:
 
-### Repository assessment
+```mermaid
+flowchart LR
+    subgraph T1["1 · Local development"]
+        direction TB
+        A1["Streamlit :8501"] -->|HTTP| A2["uvicorn :8000"]
+        A2 --- A3["Ollama :11434"]
+    end
 
-What the project already does well:
+    subgraph T2["2 · Streamlit Community Cloud"]
+        direction TB
+        B1["Streamlit :8501"] -->|"HTTP localhost"| B2["uvicorn<br/>daemon thread, :8000"]
+        B2 --- B3["Groq API"]
+    end
 
-* Detects script and normalizes inputs in `ingestion/normalizer.py`
-* Uses Telugu-aware sentence segmentation and overlap-aware chunking in `ingestion/chunker.py`
-* Embeds text through BGE-M3 in `retrieval/embeddings.py`
-* Stores and retrieves vectors through a pluggable FAISS / Qdrant backend in `retrieval/vector_store.py`
-* Builds grounded prompts with explicit source labels in `reasoning/prompter.py`
-* Orchestrates the end-to-end flow through FastAPI in `api/main.py`
+    subgraph T3["3 · Container"]
+        direction TB
+        C1["uvicorn :$PORT"] --- C2["Groq or Ollama"]
+    end
+```
 
-The main architectural gap is not model choice, but separation of concerns. For Indic-language knowledge systems, the critical responsibilities must be isolated cleanly: language detection, transliteration, document parsing, chunking, retrieval, answer synthesis, and evaluation.
+| Topology | How the API starts | Typical provider |
+| --- | --- | --- |
+| **Local** | `uvicorn api.main:app` as a separate process | Ollama (offline, private) |
+| **Streamlit Cloud** | `frontend/app.py` calls `ensure_api_ready()`, which boots uvicorn on a daemon thread inside the Streamlit process | Groq (no local GPU/Ollama available) |
+| **Container** | `Dockerfile` CMD / `railway.json` start command | Groq or a networked Ollama |
 
-### Clean layered architecture
+Streamlit Community Cloud runs **one process**, so a separate backend is impossible there. The UI
+therefore detects a missing API and starts one in-process — this is why `frontend/app.py` imports
+`uvicorn` and `api.main`. `API_BASE_URL` stays overridable via the `VANIVERSE_API_URL` environment
+variable or a Streamlit secret, so pointing at a remote API later needs no code change.
+
+---
+
+## Ingestion pipeline
+
+Turns a PDF into searchable, citation-ready vectors.
 
 ```mermaid
 flowchart TD
-    A[User Query / Upload] --> B[Interface Layer]
-    B --> C[Application Layer]
-    C --> D[Domain Layer]
-    D --> E[Language & Document Normalization]
-    D --> F[Chunking & Metadata Enrichment]
-    D --> G[Embedding & Retrieval]
-    D --> H[Grounded Generation]
-    G --> I[Vector Store / Index]
-    H --> J[Answer + Source Citations]
-    E --> K[Indic NLP Infrastructure]
-    F --> L[PDF / OCR / Layout Tools]
-    G --> M[BGE-M3 / Hybrid Search]
-    H --> N[Groq / Ollama / Local LLM]
+    PDF["📄 PDF file"] --> PARSE["Parse — PyMuPDF<br/>pages, text, metadata"]
+    PARSE --> UNI["Unicode NFC<br/>strip control chars"]
+    UNI --> REPAIR["Telugu artifact repair<br/>duplicate matras · broken conjuncts<br/>zero-width chars · orphan virama"]
+    REPAIR --> SPLIT["Sentence segmentation<br/>Telugu punctuation + spaCy"]
+    SPLIT --> PACK["Greedy token packing<br/>512 tokens, 64 overlap"]
+    PACK --> META["Attach metadata<br/>source · page · script · chunk_id"]
+    META --> EMBED["Embed — BGE-M3<br/>1024-d, L2-normalised"]
+    EMBED --> ADD["Index add — FAISS IndexFlatIP"]
+    ADD --> SAVE["Persist<br/>vaaniverse.faiss + vaaniverse_meta.pkl"]
 ```
 
-### Layered responsibilities
+Because vectors are L2-normalised, FAISS inner product **is** cosine similarity — that is why the
+`/search` and `/query` scores in the UI are directly interpretable (0.55–0.65 is a strong match for
+this corpus).
 
-#### 1. Domain Layer
-The domain layer defines the business concepts of the system and should remain independent of frameworks or storage details.
+Each chunk carries the metadata below, which is what makes citations possible later:
 
-* `DocumentEntity` — source file, metadata, language, script, provenance
-* `ChunkEntity` — normalized chunk text, page number, source, script, chunk id
-* `QueryIntent` — user query, script, language, expected answer language
-* `RetrievalResult` — chunk id, score, metadata, source citation
-* `SourceCitation` — explicit source attribution for answer verification
-
-#### 2. Application Layer
-This is the orchestration layer for use cases.
-
-* `IngestDocumentUseCase`
-* `NormalizeDocumentUseCase`
-* `CreateIndexUseCase`
-* `SearchUseCase`
-* `AnswerQueryUseCase`
-* `EvaluatePipelineUseCase`
-
-These services coordinate domain objects without embedding storage or HTTP concerns.
-
-#### 3. Infrastructure Layer
-This layer contains adapters to external systems.
-
-* PDF parsing and OCR adapters
-* Unicode and transliteration services
-* Embedding model wrappers
-* Vector store adapters (FAISS / Qdrant)
-* LLM adapters (Groq / Ollama)
-* Telemetry and evaluation sinks
-
-#### 4. Interface Layer
-This is where user interaction is exposed.
-
-* FastAPI REST endpoints
-* Streamlit frontend
-* CLI ingestion scripts
-* external dashboards or admin panels
+| Field | Example | Purpose |
+| --- | --- | --- |
+| `chunk_id` | `book_p4_0` | Stable identifier, returned to clients |
+| `source` | `book.pdf` | Cited filename |
+| `page_number` | `4` | Cited page |
+| `script` | `telugu` | Drives answer-language policy |
+| `chunk_index` | `0` | Order within the page |
+| `text` | `…` | The retrievable passage |
 
 ---
 
-## End-to-end Indic-language RAG workflow
+## Query pipeline
 
-### 1. Ingestion
-The ingestion workflow should accept many types of heritage data:
+Turns a question into a grounded, cited answer — or an honest abstention.
 
-* PDFs and scanned manuscripts
-* OCR output from historical documents
-* notes and text dumps
-* bilingual or mixed-script documents
-* references from cultural repositories
+```mermaid
+flowchart TD
+    Q["Query<br/>తెలుగు / romanized / English"] --> PROV{"Provider valid?"}
+    PROV -->|"no"| E400["400 — invalid provider"]
+    PROV -->|"groq without key"| E503A["503 — GROQ_API_KEY missing"]
+    PROV -->|"yes"| IDX{"Index non-empty?"}
+    IDX -->|"no"| E503B["503 — index is empty"]
+    IDX -->|"yes"| DET["detect_script → normalize<br/>repair / transliterate by script"]
+    DET --> EMB["Embed query — BGE-M3"]
+    EMB --> SEARCH["FAISS search<br/>top_k, score_threshold"]
+    SEARCH --> HITS{"Any chunks<br/>above threshold?"}
+    HITS -->|"no"| ABSTAIN["Abstention prompt<br/>no sources attached"]
+    HITS -->|"yes"| BUILD["Build grounded prompt<br/>[SOURCE N] labels"]
+    BUILD --> LLM["Generator — provider facade"]
+    ABSTAIN --> LLM
+    LLM --> ANS["Answer + sources_used<br/>+ query_script + model"]
+```
 
-The ingestion pipeline should capture:
+The round trip, step by step:
 
-* filename and provenance
-* document type
-* source region
-* language and script metadata
-* page structure and layout clues
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant UI as Streamlit UI
+    participant API as FastAPI /query
+    participant N as Normalizer
+    participant E as BGE-M3
+    participant V as FAISS
+    participant P as Prompter
+    participant G as Generator
+    U->>UI: నేను ఎవరు?
+    UI->>API: POST /query {query, top_k, provider}
+    API->>API: validate provider + index
+    API->>N: detect_script() + normalize()
+    N-->>API: normalized query + script
+    API->>E: embed_query()
+    E-->>API: 1024-d vector
+    API->>V: search(top_k, score_threshold)
+    V-->>API: RetrievedChunk list
+    API->>P: build_prompt(query, chunks, script)
+    P-->>API: PromptPackage (system + user prompt)
+    API->>G: generate(package, provider)
+    G-->>API: GeneratedResponse
+    API-->>UI: answer · sources_used · provider · model
+    UI-->>U: grounded answer + citations
+```
 
-### 2. Parsing and OCR normalization
-The repository already includes parsing and normalization modules, which is excellent for Indic content. The effective pipeline is:
+### The two content languages
 
-1. parse PDF or text source
-2. extract text and layout structure
-3. detect OCR noise and broken Unicode
-4. normalize script-specific artifacts
-5. preserve metadata for later retrieval and citation
+Normalization is **script-aware**, not one-size-fits-all — this is the part that decides whether a
+query is transliterated or left alone:
 
-This is especially critical for Telugu because PDF extraction often introduces broken ligatures, malformed matras, and zero-width characters.
+| Detected script | Trigger | Handling |
+| --- | --- | --- |
+| `telugu` | Telugu codepoints > 60% of letters | Unicode repair only — already native script |
+| `roman` + English stopwords | ≥ 2 English function words | **No transliteration** — protects "who am I" from being mangled |
+| `roman` (not English) | otherwise | Phrase-map substitution only (safe, no syllable walk) |
+| `mixed` | neither threshold met | Full syllable-level transliteration to Telugu |
+| `unknown` | no letters at all | Passed through |
 
-### 3. Script-aware normalization
-The normalization pipeline must decide whether a document or query is:
-
-* Telugu script
-* Romanized Telugu
-* English
-* mixed-script
-* unknown
-
-It should then apply the correct behavior:
-
-* Telugu text: preserve script and clean Unicode
-* Romanized Telugu: transliterate safely to Telugu for retrieval
-* English: avoid accidental transliteration
-* mixed-script: route carefully to preserve language context
-
-This is the heart of the system and is consistent with the logic already implemented in `ingestion/normalizer.py`.
-
-### 4. Chunking with Indic-aware boundaries
-Chunking should not be generic token-based splitting alone. For Indic-language documents, sentence boundaries and context windows matter more.
-
-Recommended chunking strategy:
-
-* Telugu punctuation-aware segmentation (`।`, `॥`, `!`, `?`)
-* overlap between adjacent chunks to preserve context
-* metadata-rich chunks with source, page, language, and script
-* paragraph-aware grouping for prose and verse
-
-This is already well-aligned with the current chunker design in `ingestion/chunker.py`.
-
-### 5. Embedding and indexing
-The system uses BGE-M3 and a vector store, which is a strong fit for multilingual and cross-lingual retrieval. Recommended flow:
-
-* encode chunks with multilingual dense embeddings
-* optionally compute sparse lexical weights for hybrid retrieval
-* store metadata with each vector
-* index by source, script, language, and page metadata when needed
-
-This allows the system to retrieve semantically relevant passages even when the query is written in a different script or transliterated form.
-
-### 6. Retrieval and reranking
-The retrieval stage should:
-
-* detect the query script
-* normalize the query
-* embed it in the same multilingual space
-* retrieve the top candidates
-* rerank with lexical or semantic relevance
-* filter by source and script when required
-
-This gives better recall and reduces false matches for culturally dense or domain-specific documents.
-
-### 7. Grounded answer generation
-The answer layer should enforce a strict source-grounded contract:
-
-* answer only using retrieved evidence
-* cite each claim with source labels
-* abstain when evidence is missing
-* preserve the user's expected language or script
-* avoid fabricating dates, names, verses, or historical facts
-
-This is already encoded in `reasoning/prompter.py` and is one of the strongest design choices in the repository.
+The English-stopword guard exists because transliterating `who am i` syllable-by-syllable produces
+garbage. `detect_script()` runs on the **raw** query, before normalization, so the decision is never
+based on already-mutated text.
 
 ---
 
-## Modular component map
+## Component map
 
-### Core modules
-
-#### `core/config.py`
-Responsible for environment-driven configuration:
-
-* embedding model selection
-* vector backend choice
-* vector paths
-* LLM backend selection
-* chunking parameters
-* API configuration
-
-#### `core/exceptions.py`
-Defines domain-specific exceptions for:
-
-* normalization failure
-* retrieval failure
-* prompt construction issues
-* indexing issues
-* LLM inference errors
-
-#### `api/main.py`
-This is the application orchestration layer:
-
-* startup lifecycle
-* vector store initialization
-* generator lifecycle
-* API endpoints for `/health`, `/ingest`, `/query`, `/search`, `/index/stats`, `/index/reset`
-
-### Ingestion modules
-
-#### `ingestion/parser.py`
-Handles extraction and document parsing.
-
-#### `ingestion/normalizer.py`
-The LangTech core of the project. Includes script detection, Romanized Telugu transliteration, Unicode repair, and text normalization.
-
-#### `ingestion/chunker.py`
-Converts normalized text into retrieval-ready chunks with overlap and metadata.
-
-### Retrieval modules
-
-#### `retrieval/embeddings.py`
-Loads BGE-M3 and encodes both passage chunks and queries.
-
-#### `retrieval/vector_store.py`
-Provides the retrieval backend and indexing abstraction. It uses FAISS by default and supports Qdrant as a production alternative.
-
-### Reasoning modules
-
-#### `reasoning/prompter.py`
-Builds source-grounded prompts and ensures citation-aware answer generation.
-
-#### `reasoning/generator.py`
-Calls Groq or Ollama to produce grounded answers from retrieved context.
+| Module | Responsibility | Key entry points |
+| --- | --- | --- |
+| `api/main.py` | HTTP orchestration; startup singletons for store + generator | `lifespan`, 6 endpoints |
+| `core/config.py` | Single source of truth for env-driven settings | `LLM_PROVIDER`, `FAISS_*_PATH`, `TOP_K`, `SCORE_THRESHOLD` |
+| `core/exceptions.py` | Typed domain errors with structured `details` | `VaaniverseBaseError` + 11 subclasses |
+| `ingestion/parser.py` | PDF → pages with layout metadata | `parse_document()` |
+| `ingestion/normalizer.py` | Script detection, Unicode repair, transliteration | `detect_script()`, `normalize()`, `repair_telugu_unicode()` |
+| `ingestion/chunker.py` | Sentence-aware packing with overlap + metadata | `chunk_document()`, `chunk_page()` |
+| `retrieval/embeddings.py` | Lazy-loaded BGE-M3 dense encoder | `get_model()`, `embed_chunks()`, `embed_query()` |
+| `retrieval/vector_store.py` | Backend-agnostic store; FAISS + Qdrant adapters | `VectorStore`, `FAISSVectorStore`, `QdrantVectorStore` |
+| `reasoning/prompter.py` | Evidence-only prompts with `[SOURCE N]` labels | `build_prompt()`, `build_no_result_prompt()` |
+| `reasoning/generator.py` | Provider-agnostic LLM facade | `Generator`, `OllamaProvider`, `GroqProvider` |
+| `frontend/app.py` | Streamlit UI + embedded-API bootstrap | `ensure_api_ready()`, `query_api()` |
+| `scripts/*` | Batch ingestion, benchmarking, evaluation | see [CLI](#cli) |
 
 ---
 
-## Multimodal and multilingual trade-offs
+## API reference
 
-### Multimodal processing trade-offs
-Indic heritage collections often include more than raw text:
+| Method | Endpoint | Purpose | Failure modes |
+| --- | --- | --- | --- |
+| `GET` | `/health` | Liveness + index size + active provider + `groq_configured` | `503` store uninitialised |
+| `POST` | `/ingest` | Upload a PDF → parse → chunk → embed → persist | `422` not a PDF / unparseable / zero chunks · `500` save, chunk, or index failure |
+| `POST` | `/query` | End-to-end RAG with citations | `400` unknown provider · `503` Groq key missing or index empty · `502` LLM call failed |
+| `GET` | `/search` | Retrieval only — no LLM, useful for debugging recall | `503` index empty · `500` retrieval failure |
+| `GET` | `/index/stats` | Vector count and readiness | — |
+| `DELETE` | `/index/reset` | Drop the in-memory index | — |
 
-* scanned manuscripts
-* inscriptions on temple walls
-* handwritten notes
-* mixed page layouts
-* image-heavy historical documents
+<details>
+<summary><b>Example — <code>POST /query</code></b></summary>
 
-Benefits of multimodal processing:
+```bash
+curl -s http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+        "query": "నేను ఎవరు?",
+        "top_k": 5,
+        "score_threshold": 0.45,
+        "provider": "groq"
+      }'
+```
 
-* better extraction for non-text pages
-* more complete coverage of heritage content
-* support for OCR-heavy or image-based historical material
+```jsonc
+{
+  "answer": "…grounded answer with [SOURCE 3] citations…",
+  "query": "నేను ఎవరు?",
+  "query_script": "telugu",
+  "model": "llama-3.3-70b-versatile",
+  "provider": "groq",
+  "backend": "groq",
+  "sources_used": [
+    { "chunk_id": "book_p1_0", "source": "book.pdf",
+      "page_number": 1, "score": 0.6207, "script": "telugu" }
+  ],
+  "total_chunks_retrieved": 5
+}
+```
 
-Costs:
+</details>
 
-* higher latency and compute cost
-* OCR errors and noisy transcripts
-* complex evaluation and provenance handling
-* larger indexing and storage footprint
-
-Recommended strategy:
-
-* keep text-first retrieval as the default path
-* add OCR and image-aware processing as an optional pipeline for scanned or degraded documents
-* ingest OCR text and image-level metadata into the same retrieval corpus
-* never let multimodal features compromise retrieval stability for the core transliterated text use case
-
-### Multilingual input trade-offs
-Indic-language systems must support a very different kind of variability than English-centric RAG systems:
-
-* Telugu vs Romanized Telugu
-* mixed Hindi-English or Telugu-English phrases
-* transliterated names
-* code-switching in real user queries
-* script-drift in historical documents
-
-Trade-offs between monolingual and multilingual approaches:
-
-#### Single shared multilingual index
-Pros:
-
-* simpler architecture
-* better cross-language semantic matching
-* lower operational complexity
-
-Cons:
-
-* weaker language-specific precision
-* more risk of mixed-script confusion
-* answer generation can drift in script or language policy
-
-#### Language-specific indexes with routing
-Pros:
-
-* better precision and language targeting
-* simpler per-language evaluation
-* easier to tune retrieval thresholds per language
-
-Cons:
-
-* more engineering complexity
-* requires an explicit routing strategy
-* harder to maintain consistent global metadata
-
-Recommended hybrid approach:
-
-* use a shared multilingual embedding model for the base retrieval layer
-* add language-specific metadata routing
-* optionally maintain per-language sub-indexes for sensitive domains
-* keep a single source-of-truth for provenance and citation
+The API also serves interactive docs at **`/docs`** (OpenAPI/Swagger) whenever it is running.
 
 ---
 
-## Evaluation framework and metrics
+## Choosing an LLM provider
 
-A strong Indic-language RAG system must evaluate both retrieval quality and answer correctness. For VāṇiVerse, the evaluation should be separated into at least three layers: retrieval, generation, and language fidelity.
+**Ollama is the default. Groq is strictly opt-in, per request.**
 
-### Retrieval metrics
+| Rule | Behaviour |
+| --- | --- |
+| Default | `LLM_PROVIDER` (env), falling back to `ollama` |
+| Legacy alias | `LLM_BACKEND` is still read if `LLM_PROVIDER` is unset |
+| Per-request override | `provider` field in `POST /query` (`"ollama"` or `"groq"`) |
+| Unknown provider | `400`, before any work is done |
+| Groq without a key | `503`, with a message naming `GROQ_API_KEY` |
+| Startup safety | Providers are built lazily and never touch the network at construction, so a missing key or an offline Ollama **cannot** crash the server — it fails only when that provider is actually asked to generate |
 
-* `Recall@k` — how many relevant chunks appear in the top k results
-* `MRR@k` — mean reciprocal rank of the first relevant result
-* `nDCG@k` — ranking quality with graded relevance
-* `MAP` — average precision across queries
-* `Hit Rate` — percentage of queries with at least one valid retrieval hit
-
-These metrics help assess whether the vector index is truly retrieving the right cultural and linguistic evidence.
-
-### Answer quality metrics
-
-* `Exact Match (EM)` — strict matching for factoid answers
-* `F1 Score` — token overlap between model response and expected answer
-* `BERTScore` or semantic similarity — useful for paraphrased answers
-* `Groundedness` — percentage of claims supported by retrieved evidence
-* `Hallucination Rate` — percentage of unsupported statements
-* `Citation Precision` — proportion of cited sources that were actually used
-* `Citation Recall` — proportion of supporting material the system cites
-
-### Indic-language-specific metrics
-These are critical for VāṇiVerse because generic English-centric QA metrics do not fully capture the user experience.
-
-* `Script Fidelity` — whether the answer uses the correct script
-* `Transliteration Accuracy` — whether Romanized Telugu queries map to the correct Telugu answer
-* `Mixed-script Robustness` — success rate on Telugu-English prompts and code-switched inputs
-* `Language Consistency Score` — answer language matches query policy
-* `Abstention Accuracy` — model correctly says the information is unavailable when evidence is absent
-
-### Evaluation strategy
-
-The evaluation set should be stratified by:
-
-* Telugu-native queries
-* Romanized Telugu queries
-* English queries
-* mixed-script queries
-* domain category (history, philosophy, literature, ritual, education)
-* source type (PDF, OCR, manuscript, text dump)
-
-This ensures the system is measured on the actual problem distribution it will face in production.
+The API key is read from the environment only. It is never hardcoded, never logged, and never
+committed — `.env.example` ships an empty placeholder.
 
 ---
 
-## Recommended production architecture for VāṇiVerse
+## Configuration
 
-The clean production direction is:
+Every setting is environment-driven (`core/config.py`). Copy `.env.example` → `.env` and edit.
 
-1. Keep a multilingual dense retrieval foundation using BGE-M3.
-2. Add hybrid retrieval with lexical and semantic ranking.
-3. Add explicit language and script detection before indexing and querying.
-4. Separate the ingestion and retrieval layers from the answer generation layer.
-5. Treat citation and source grounding as first-class requirements.
-6. Add evaluation pipelines that continuously measure retrieval, answer quality, and script fidelity.
-7. Keep multimodal support as an optional extension rather than a default dependency for all content.
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `LLM_PROVIDER` | `ollama` | `ollama` \| `groq` |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | |
+| `OLLAMA_MODEL` | `llama3` | `.env.example` ships `qwen2.5:3b` (fits a 4 GB GPU) |
+| `OLLAMA_TEMPERATURE` | `0.2` | |
+| `GROQ_API_KEY` | *(empty)* | Supply via environment/secret store only |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | |
+| `GROQ_MAX_TOKENS` / `GROQ_TEMPERATURE` | `1024` / `0.2` | |
+| `VECTOR_BACKEND` | `faiss` | `faiss` \| `qdrant` |
+| `EMBEDDING_MODEL_NAME` | `BAAI/bge-m3` | |
+| `EMBEDDING_DEVICE` | `cpu` | Set `cuda` for GPU ingestion/query |
+| `EMBEDDING_BATCH_SIZE` | `32` | |
+| `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_COLLECTION` | `localhost` / `6333` / `vaaniverse` | |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `512` / `64` | Tokens |
+| `SPACY_MODEL` | `en_core_web_sm` | Telugu path is rule-based and does not need it |
+| `TOP_K` / `SCORE_THRESHOLD` | `5` / `0.45` | Retrieval defaults, overridable per request |
+| `API_HOST` / `API_PORT` / `API_RELOAD` | `0.0.0.0` / `8000` / `true` | |
 
-This keeps the system robust, explainable, and aligned with the cultural-preservation mission behind VāṇiVerse.
+Built-in art-direction (dark "ink & turmeric" theme) lives in `.streamlit/config.toml`.
 
 ---
 
-## Project Structure
+## Quickstart
+
+**Prerequisites:** Python 3.12, and either [Ollama](https://ollama.com) (local, default) or a
+[Groq API key](https://console.groq.com) (hosted).
+
+```bash
+git clone https://github.com/sohansourab/vaaniVerse.git
+cd vaaniVerse
+
+python -m venv .venv
+.venv\Scripts\activate           # Windows
+# source .venv/bin/activate      # macOS / Linux
+
+pip install -r requirements.txt
+cp .env.example .env             # then edit if needed
+```
+
+**1 — Start a model (for the default Ollama provider):**
+
+```bash
+ollama pull qwen2.5:3b
+ollama serve
+```
+
+**2 — Build an index from your own PDF:**
+
+```bash
+python -m scripts.ingest_documents --input path/to/book.pdf
+```
+
+The index is written to `data/vectors/`. The first run downloads BGE-M3 (~2.2 GB) from Hugging Face.
+
+**3 — Run the app:**
+
+```bash
+streamlit run frontend/app.py
+```
+
+That is enough. If no API is listening on port 8000, the UI starts one itself and the sidebar turns
+**Online**. To run the backend separately instead:
+
+```bash
+uvicorn api.main:app --host 127.0.0.1 --port 8000   # then: streamlit run frontend/app.py
+```
+
+Open <http://localhost:8501> and ask away. Sidebar controls: **Top K**, **Score threshold**,
+**Filter by source**, **LLM provider**, and PDF upload → **Ingest document**.
+
+### CLI
+
+```bash
+# Batch-ingest a file or a whole directory, with optional dry run
+python -m scripts.ingest_documents --input docs/ --chunk-size 512 --overlap 64 --dry-run
+
+# Latency/recall benchmark against a running API
+python -m scripts.benchmark_retrieval --help
+
+# Answer quality: exact match, F1, citation precision/recall
+python -m scripts.evaluate_rag --help
+```
+
+### Docker
+
+```bash
+docker build -t vaaniverse .
+docker run -p 8000:8000 -v vaaniverse-data:/app/data vaaniverse
+```
+
+The image is a two-stage `python:3.12-slim` build that runs as non-root (`appuser`, uid 10001) and
+honours `$PORT`. Mount `/app/data` to persist the index — without it, ingestions vanish on restart.
+
+> **Windows note:** non-ASCII CLI output needs UTF-8. Run `$env:PYTHONUTF8=1` (PowerShell) before
+> Python commands.
+
+---
+
+## Project structure
 
 ```text
-vaniverse/
+vaaniVerse/
 ├── api/
-│   └── main.py
-│
+│   └── main.py                 # FastAPI app, endpoints, lifespan singletons
 ├── core/
-│   ├── config.py
-│   └── exceptions.py
-│
-├── docs/
-│   ├── ARCHITECTURE.md
-│   └── ROADMAP.md
-│
+│   ├── config.py               # environment-driven settings
+│   └── exceptions.py           # typed domain errors
 ├── ingestion/
-│   ├── parser.py
-│   ├── normalizer.py
-│   └── chunker.py
-│
+│   ├── parser.py               # PDF → pages (+ layout metadata)
+│   ├── normalizer.py           # script detection · Unicode repair · transliteration
+│   └── chunker.py              # sentence-aware, overlap-aware chunking
 ├── retrieval/
-│   ├── embeddings.py
-│   └── vector_store.py
-│
+│   ├── embeddings.py           # BGE-M3 dense encoder (1024-d, L2-normalised)
+│   └── vector_store.py         # VectorStore facade + FAISS / Qdrant backends
 ├── reasoning/
-│   ├── prompter.py
-│   └── generator.py
-│
+│   ├── prompter.py             # source-grounded prompt construction
+│   └── generator.py            # provider facade — Ollama | Groq
 ├── frontend/
-│   └── app.py
-│
+│   └── app.py                  # Streamlit UI + embedded-API bootstrap
 ├── scripts/
-│   ├── ingest_documents.py
-│   ├── evaluate_rag.py
-│   └── benchmark_retrieval.py
-│
-├── README.md
-├── requirements.txt
-└── .env.example
+│   ├── ingest_documents.py     # batch ingestion CLI
+│   ├── benchmark_retrieval.py  # retrieval latency benchmark
+│   └── evaluate_rag.py         # EM / F1 / citation metrics
+├── tests/
+│   ├── test_api_providers.py   # provider routing at the HTTP layer
+│   └── test_llm_providers.py   # provider behaviour in isolation
+├── docs/
+│   ├── ARCHITECTURE.md         # full design rationale
+│   └── ROADMAP.md              # milestones and exit criteria
+├── .streamlit/config.toml      # UI theme
+├── Dockerfile                  # two-stage, non-root container
+├── railway.json                # container deploy config
+├── requirements.txt            # runtime deps
+├── requirements-dev.txt        # pytest
+└── .env.example                # config template (no secrets)
 ```
 
----
-
-## Architecture and Roadmap Docs
-
-The repository now includes formal design references for the intended system evolution:
-
-* [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — clean architecture design for the Indic-language RAG system
-* [docs/ROADMAP.md](docs/ROADMAP.md) — milestone-based roadmap with engineering priorities and exit criteria
-
-## Evaluation and Benchmarking
-
-The repo also includes scripts to benchmark retrieval latency and evaluate answer quality:
-
-* `scripts/evaluate_rag.py` — computes exact match, F1, citation precision/recall, and aggregate summaries
-* `scripts/benchmark_retrieval.py` — runs retrieval benchmarks against the FastAPI `/query` endpoint
+`data/` is **gitignored** and created at runtime — it holds uploaded documents and the vector index.
+The `.pkl` metadata file embeds source text, so it is deliberately never committed.
 
 ---
 
-## Technology Stack
+## Testing
 
-| Layer               | Technology                       |
-| ------------------- | -------------------------------- |
-| Language            | Python 3.12                      |
-| API Framework       | FastAPI                          |
-| Frontend            | Streamlit                        |
-| Embeddings          | BAAI BGE-M3                      |
-| Vector Database     | FAISS (active) · Qdrant (implemented, untested)|
-| Document Processing | PyMuPDF                          |
-| NLP                 | spaCy + Custom Telugu Processing |
-| Online LLM          | Groq                             |
-| Offline LLM         | Ollama                           |
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+# 15 passed
+```
 
----
+The suite covers the provider contract end to end without needing Ollama, Groq, or a GPU:
 
-## Retrieval Pipeline
-
-### Parsing
-
-* PDF extraction using PyMuPDF
-* Text and layout processing
-* Image boundary detection
-
-### Normalization
-
-* Unicode normalization
-* Script identification
-* Telugu text cleanup
-* Romanized Telugu conversion
-
-### Chunking
-
-* Telugu-aware sentence segmentation
-* Semantic chunk construction
-* Overlap-aware retrieval optimization
-
-### Retrieval
-
-* Multilingual embeddings via BGE-M3
-* Dense vector similarity search
-* Metadata-aware ranking
-
-### Generation
-
-* Source-grounded prompting
-* Script-aware response generation
-* Citation-enforced answers
+- default provider is `ollama`; a per-request override is honoured
+- an unknown provider returns **400** with no downstream work
+- `groq` without a key returns **503** rather than crashing
+- `/health` reports `llm_default` and `groq_configured` accurately
+- Ollama/Groq providers raise typed errors on empty responses and connection failures
 
 ---
 
-## Example Query Modes
+## Known limitations
 
-| Input Type       | Example                           |
-| ---------------- | --------------------------------- |
-| Telugu           | `నేను ఎవరు అంటే ఏమిటి`            |
-| Romanized Telugu | `nenu evarini`                    |
-| English          | `What is the nature of the self?` |
+These are real and worth knowing before you rely on the system:
 
-All query types pass through a unified multilingual retrieval workflow while preserving language-specific context.
-
----
-
-## API Endpoints
-
-| Method | Endpoint       | Purpose                   |
-| ------ | -------------- | ------------------------- |
-| GET    | `/health`      | Service health and status |
-| POST   | `/ingest`      | Document ingestion        |
-| POST   | `/query`       | End-to-end RAG query      |
-| GET    | `/search`      | Retrieval-only search     |
-| GET    | `/index/stats` | Index statistics          |
-| DELETE | `/index/reset` | Reset vector index        |
+1. **Text-based PDFs only.** Scanned or image-only pages yield zero chunks and `POST /ingest` returns
+   `422`. OCR is not implemented yet.
+2. **PDF extraction quality caps retrieval quality.** Telugu extracted from many PDFs contains
+   spacing artifacts (e.g. `మ ైన` for `మైన`). Normalization repairs structural damage, but it cannot
+   recover text that was never extracted correctly. This measurably weakens embeddings.
+3. **The local default model is small.** `qwen2.5:3b` produces repetitive, awkward Telugu. Wiring is
+   correct; generation quality is a model-size question. `llama-3.3-70b-versatile` via Groq is
+   substantially better.
+4. **Qdrant is implemented but not integration-tested.** FAISS is the tested path.
+5. **FAISS is in-memory and single-process.** No concurrency story, no scale-out, and no native
+   metadata filtering — `filter_by` is honoured on Qdrant only and ignored on FAISS.
+6. **Ingestion appends.** Both the CLI and `POST /ingest` add to an existing index; re-ingesting the
+   same PDF duplicates vectors. Use `DELETE /index/reset` (in-memory only) or remove
+   `data/vectors/*` and rebuild.
+7. **The index does not travel with the repo.** `data/` is gitignored, so any hosted deployment starts
+   with an empty index and must ingest before it can answer.
+8. **Streamlit Community Cloud is a tight fit.** No GPU, modest RAM, ephemeral disk. BGE-M3 needs
+   ~2.2 GB in fp32, and the index must be rebuilt after each cold start.
+9. **BGE-M3 loads lazily.** The first ingest or query pays the model-load cost (minutes on CPU, and a
+   one-time ~2.2 GB download). The UI shows a spinner; timeouts are raised accordingly.
 
 ---
 
 ## Roadmap
 
-### Phase 1 — Foundation ✅ Complete
+| Phase | Focus | State |
+| --- | --- | --- |
+| **1 · Foundation** | Multilingual RAG pipeline, FastAPI, Streamlit, FAISS, provider switch, tests | ✅ Complete |
+| **2 · Robustness** | OCR, stronger transliteration, richer PDF layout handling, better token estimation | Planned |
+| **3 · Cultural intelligence** | Inscription understanding, historical documents, heritage knowledge graph, community workflows | Planned |
+| **4 · Indic expansion** | Hindi, Tamil, Kannada, Sanskrit, cross-language retrieval | Planned |
 
-* Multilingual RAG pipeline (Telugu, Romanized Telugu, English)
-* FastAPI backend with full REST API
-* Streamlit interface
-* FAISS vector retrieval
-* Pre-commit quality gates: ruff, mypy, pytest
+Detailed milestones with tasks and exit criteria live in [docs/ROADMAP.md](docs/ROADMAP.md).
 
-### Phase 2 — Robustness
+---
 
-* OCR integration
-* Improved transliteration
-* Advanced PDF layout handling
-* Enhanced token estimation
+## Documentation
 
-### Phase 3 — Cultural Intelligence
-
-* Temple inscription understanding
-* Historical document processing
-* Heritage knowledge graph
-* Community contribution workflows
-
-### Phase 4 — Indic Expansion
-
-* Hindi support
-* Tamil support
-* Kannada support
-* Sanskrit support
-* Cross-language retrieval
+| Document | Contents |
+| --- | --- |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Clean-architecture design, layer contracts, Indic-language policy, evaluation design |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestone-based plan with engineering priorities and exit criteria |
+| [DEPLOY.md](DEPLOY.md) | Container and hosted deployment |
+| [VERIFY.md](VERIFY.md) | Verified local run: commands and observed output |
+| [ANALYSIS.md](ANALYSIS.md) | Repository analysis and endpoint verification |
 
 ---
 
 ## Contributing
 
-Contributions are welcome from developers, researchers, linguists, and cultural preservation enthusiasts.
+Contributions are welcome from developers, researchers, linguists, and anyone working on cultural
+preservation.
 
-1. Fork the repository
-2. Create a feature branch
-3. Commit changes
-4. Submit a pull request
+1. Fork the repository and create a feature branch.
+2. Keep the boundaries intact — new storage or model backends belong behind `VectorStore` /
+   `Generator`, not in `api/main.py`.
+3. Run `pytest -q` before opening a pull request.
 
-Areas of interest include:
-
-* Indic NLP
-* OCR systems
-* Multilingual retrieval
-* Knowledge graphs
-* Historical document processing
-* Cultural AI research
+Especially useful: Indic NLP, OCR, multilingual retrieval, knowledge graphs, and historical document
+processing.
 
 ---
 
 ## License
 
-Released under the MIT License.
+Released under the **MIT License** — see [LICENSE](LICENSE).
 
 ---
 
 ## Acknowledgements
 
-Built using:
+[BAAI BGE-M3](https://huggingface.co/BAAI/bge-m3) · [FastAPI](https://fastapi.tiangolo.com) ·
+[Streamlit](https://streamlit.io) · [PyMuPDF](https://pymupdf.readthedocs.io) ·
+[FAISS](https://github.com/facebookresearch/faiss) · [Qdrant](https://qdrant.tech) ·
+[Groq](https://groq.com) · [Ollama](https://ollama.com)
 
-* BAAI BGE-M3
-* FastAPI
-* Streamlit
-* PyMuPDF
-* Groq
-* Ollama
-* FAISS
-* Qdrant
-
----
-
-### Preserving India's knowledge systems through multilingual AI.
+<div align="center">
+<br/>
+<em>Preserving India's knowledge systems through multilingual AI.</em>
+</div>
