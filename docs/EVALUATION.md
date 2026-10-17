@@ -236,6 +236,74 @@ out-of-domain rejection.
   and added no vocabulary from it, but a second, unseen Romanized set is the only way to make the
   figure fully trustworthy.
 
+### Cross-encoder reranking — implemented and verified, not yet measured end-to-end
+
+**Scope:** the retrieval path gained an optional second stage. `RERANK_ENABLED` is **off by
+default**, and every number in [§1](#1-retrieval-quality-top_k--5-of-33-chunks) and
+[§2](#2-threshold-behaviour-score_threshold--045) was produced with it off. The dense path was
+re-measured on the post-change code (`eval/rerank_dense.json`) and is unchanged: recall@5 0.900,
+precision@5 0.240, MRR 0.6856, gate pass 0.7667, out-of-domain rejection 0.0 — an exact
+reproduction of the 2A figures, which is the evidence that the reranker did not disturb it.
+
+What was verified:
+
+| Check | Result |
+| --- | --- |
+| Unit tests (`tests/test_reranker.py`) | 17 pass, offline, no model download |
+| API smoke test | `reranked: true`; results ordered by rerank score (0.9950 / 0.9796 / 0.9699) with dense scores preserved separately (0.6207 / 0.5967 / 0.5515) |
+| Ranking sanity on the real corpus | `నేను ఎవరు?` scores the relevant passage **0.3666** against an unrelated one **0.0000** |
+| Missing dependency | degrades to dense-only with a single warning; a model that loads but fails to score raises `RerankError` |
+
+**Measured cost — the main result of this work.** Reranking 20 full ~512-token chunks on CPU
+takes **~34 s per query** (~1.4–1.7 s per pair). That is why `RERANK_ENABLED` is off in the
+hosted default: it is a real latency cost, and on Streamlit Community Cloud a second ~2.3 GB
+model does not fit alongside BGE-M3.
+
+**What was *not* measured, stated plainly.** The before/after retrieval delta for the reranked
+configuration was not obtained. Both attempts were lost to an environment fault rather than to
+the reranker: on Windows, uvicorn's asyncio accept loop intermittently dies with
+`OSError: [WinError 64] The specified network name is no longer available`, which leaves a run
+apparently healthy on one surviving keep-alive connection while the listening socket is already
+gone — so the run continues, then fails the moment a new connection is opened. The harness now
+holds a single connection (`keepalive_expiry=900`) against a server started with
+`--timeout-keep-alive 300`, which is what keeps a run alive at all; the third attempt was cut
+for time rather than completed. **Do not quote a reranked recall figure: there isn't one.**
+
+To produce it:
+
+```bash
+RERANK_ENABLED=true python -m uvicorn api.main:app --port 8000 --timeout-keep-alive 300
+python eval/run_eval.py --skip-query --out eval/rerank_on.json           # ~40 min on CPU
+python eval/threshold_study.py --out eval/gate_reranked.json             # ~25 min on CPU
+```
+
+**Two caveats that would apply to any number from this corpus.**
+
+- `RERANK_CANDIDATES=20` against a **33-chunk** corpus means the reranker sees roughly 61% of it.
+  A recall lift measured here would be easy to produce and would not be evidence at scale.
+- `RERANK_THRESHOLD=0.5` sits **above** the 0.3666 that the known-relevant passage scores, so the
+  shipped default would abstain on a correct answer. It is a placeholder pending
+  `eval/threshold_study.py`; treating it as calibrated would be wrong.
+
+### Answer-language, citation and text-layer fixes
+
+These move no retrieval number above, but they change observable behaviour.
+
+- **Romanized Telugu was answered in English.** `detect_script` reports `"roman"` for both English
+  and Romanized Telugu, and every `"roman"` query was routed to the English system prompt, whose
+  rule 2 forbids Telugu — which made `_SYSTEM_PROMPT_TELUGU`'s own rule for Romanized input
+  unreachable. Prompt selection now resolves an answer language from the script *plus* the query,
+  reusing the stopword heuristic the normalizer already used to gate transliteration. Verified over
+  HTTP against the embedded API: `nenu evaru?` → 85–88% Telugu characters, `who am i?` → 0%,
+  `నేను ఎవరు?` → 86–88%.
+- **Citations could name a source that was never provided.** The blocks are labelled
+  `[SOURCE 1]..[SOURCE N]` but nothing stated that N was a ceiling; against a five-block prompt the
+  model cited `[SOURCE 6]` in **1 of 6** sampled runs. The prompt now states the bound numerically.
+  After the change: **0 of 6**. With n=6 that is suggestive, not established — the definite part is
+  that the bound was genuinely absent before.
+- **`fitz` → `pymupdf`.** The dependency was already `pymupdf`; the deprecated alias printed a
+  warning on every run and will stop working when it is removed.
+
 ---
 
 ## Threats to validity

@@ -58,9 +58,11 @@ those as first-class problems.
 
 > **Status:** Phases 1–2 complete — the end-to-end pipeline runs, the API and UI are live, the
 > provider switch (Ollama ⇆ Groq) is implemented and tested, and retrieval is measured at
-> **90% recall@5** ([docs/EVALUATION.md](docs/EVALUATION.md)). Phase 3 (robustness: transliteration,
-> reranking, OCR) is in progress. OCR and multi-language expansion are roadmap items, not shipped
-> features. See [Known limitations](#known-limitations).
+> **90% recall@5** ([docs/EVALUATION.md](docs/EVALUATION.md)). Phase 3 (robustness) is in progress:
+> the Romanized-Telugu transliteration fix is **done**, OCR-first ingestion for image-only pages is
+> **shipped** as a pluggable engine layer ([docs/OCR.md](docs/OCR.md)), and a cross-encoder reranker
+> is implemented but **off by default and not yet measured end-to-end**. Languages beyond
+> Telugu/English remain a roadmap item. See [Known limitations](#known-limitations).
 
 ---
 
@@ -409,6 +411,11 @@ Every setting is environment-driven (`core/config.py`). Copy `.env.example` → 
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `512` / `64` | Tokens |
 | `SPACY_MODEL` | `en_core_web_sm` | Telugu path is rule-based and does not need it |
 | `TOP_K` / `SCORE_THRESHOLD` | `5` / `0.45` | Retrieval defaults, overridable per request |
+| `RERANK_ENABLED` | `false` | Second-stage cross-encoder. **Off by default** — ~34 s/query on CPU |
+| `RERANK_MODEL` / `RERANK_DEVICE` | `BAAI/bge-reranker-v2-m3` / `cpu` | Device pinned to CPU so it stays off the embedder's GPU |
+| `RERANK_CANDIDATES` / `RERANK_THRESHOLD` | `20` / `0.5` | Candidates retrieved before reranking; threshold is **not calibrated** yet |
+| `OCR_ENABLED` / `OCR_ENGINE` | `true` / `auto` | OCR runs only on pages with no usable text layer; `auto` = Tesseract, EasyOCR fallback |
+| `OCR_LANG` / `OCR_DPI` / `OCR_MIN_CHARS` | `te,en` / `200` / `16` | Telugu + English; below `OCR_MIN_CHARS` a page counts as image-only |
 | `API_HOST` / `API_PORT` / `API_RELOAD` | `0.0.0.0` / `8000` / `true` | |
 
 Built-in art-direction (dark "ink & turmeric" theme) lives in `.streamlit/config.toml`.
@@ -550,6 +557,7 @@ English; 10 out-of-domain probes), `qwen2.5:3b` + BGE-M3 + FAISS, `top_k=5`.
 | Retrieval | **Recall@5** | **0.900** (random baseline 0.152) |
 | Retrieval | MRR | **0.686** |
 | Retrieval | Latency (embed + search) | **277 ms** p50 |
+| Retrieval | Latency with reranking on | **~34 s** p50 — CPU-only, off by default |
 | Retrieval | In-corpus queries clearing the 0.45 gate | 76.7% |
 | Retrieval | Out-of-domain queries clearing the 0.45 gate | **0/10 (0%)** |
 | Grounding | Out-of-domain questions refused | **10/10 (100%)** ¹ |
@@ -562,6 +570,18 @@ Recall by query language: English **1.00** · Telugu **0.85** · romanized Telug
 ¹ Measured **before** the romanized-transliteration fix, and not yet re-run — these rows will move
 (fewer false abstentions) once they are. Every retrieval-layer row, including both gate rates, was
 re-measured after it. See [docs/EVALUATION.md](docs/EVALUATION.md) for the before/after detail.
+
+**Cross-encoder reranking is implemented, tested, and available — but off by default and not
+measured end-to-end.** `RERANK_ENABLED=true` adds a second stage that re-scores the top
+`RERANK_CANDIDATES` (20) passages with `BAAI/bge-reranker-v2-m3` before the top 5 are returned. It
+is unit-tested (17 tests, offline), verified to reorder results while preserving the dense score
+separately as `retrieval_score`, and sanity-checked on the real corpus (`నేను ఎవరు?` scores the
+relevant passage 0.3666 against 0.0000 for an unrelated one). It is off by default for two measured
+reasons — **~34 s per query** on CPU, since each candidate is a full ~512-token chunk, and a second
+~2.3 GB model that does not fit next to BGE-M3 on Streamlit Cloud. **No reranked recall figure is
+claimed:** the before/after run was lost twice to a Windows uvicorn accept-loop fault and cut for
+time, and `RERANK_CANDIDATES=20` covers ~61% of a 33-chunk corpus, so a lift here would be easy to
+inflate anyway. See [docs/EVALUATION.md](docs/EVALUATION.md) for how to reproduce it.
 
 **Honest reading.** Retrieval is solid and works *cross-lingually* — an English question reliably
 surfaces Telugu passages. Out-of-domain questions are refused rather than answered: zero

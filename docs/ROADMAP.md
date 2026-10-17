@@ -110,15 +110,20 @@ against upstream sources rather than assumed. Only Telugu-capable engines are re
 has no Telugu dictionary and Surya has no Telugu entry, so neither is advertised. Measured CER/WER
 and the reasoning are in [OCR.md](OCR.md).
 
-Still active: **reranking** — the 0.45 threshold rejects 100% of out-of-domain queries but also stops
-23.3% of genuine ones, and the in-corpus and out-of-domain score distributions overlap, so no fixed
-cutoff can fix it.
+**Reranking is implemented but not yet calibrated.** The 0.45 threshold rejects 100% of
+out-of-domain queries but also stops 23.3% of genuine ones, and the in-corpus and out-of-domain score
+distributions overlap, so no fixed cutoff can fix it. A cross-encoder second stage now exists
+(`RERANK_ENABLED`, **off by default**) and is unit-tested and smoke-verified, but two things remain
+open: its before/after retrieval delta was never obtained, and `RERANK_THRESHOLD=0.5` sits above the
+0.3666 that a known-relevant passage actually scores — so it is a placeholder, not a calibrated
+value. It is also ~34 s per query on CPU, which is why it is not the hosted default.
 
 ### Tasks
 
 - **[done]** fix the Romanized-Telugu transliteration path — 60% → 100% recall@5
 - **[done]** OCR-first ingestion for scanned and image-only pages — [OCR.md](OCR.md)
-- **[active]** add a reranking stage to replace the fixed `score_threshold` cutoff
+- **[active]** reranking stage added (`RERANK_ENABLED`, off by default) — next: measure its retrieval
+  delta and calibrate `RERANK_THRESHOLD` via `eval/threshold_study.py`
 - **[open]** act on OCR confidence — it is recorded per page but nothing consumes it yet; low
   confidence should retry or be surfaced rather than silently indexed
 - **[open]** improve the OCR path for degraded manuscripts (a GPU VLM behind the same interface)
@@ -236,8 +241,10 @@ normalization regression tests) is **done** — see milestone 2. Current next st
 
 - **[done]** fix the Romanized-Telugu transliteration path — verified 60% → 100% via
   `eval/run_eval.py --skip-query`
-- add a reranker stage and re-run the threshold study to test whether false abstention falls
-  without losing the 10/10 out-of-domain refusal
+- **[done]** reranker stage added — `retrieval/reranker.py`, `RERANK_ENABLED` (off by default),
+  17 unit tests. **Still open:** the retrieval delta and a calibrated `RERANK_THRESHOLD` — the sweep
+  (`eval/threshold_study.py`) has not produced a number yet, and the default 0.5 would abstain on a
+  known-relevant passage (0.3666)
 - re-run the end-to-end evaluation ([EVALUATION.md §3](EVALUATION.md#3-end-to-end-grounding-40-queries-0-http-errors)
   is stale — it predates the transliteration fix)
 - implement nDCG and MAP to close out milestone 2's metric list
