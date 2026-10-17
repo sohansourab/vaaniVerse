@@ -33,6 +33,8 @@
 VāṇiVerse is a **multilingual Retrieval-Augmented Generation (RAG)** platform for Telugu and
 other Indic heritage content. Ask a question in **Telugu**, **Romanized Telugu**, or **English**
 and get an answer built *only* from retrieved source passages, with the source and page cited.
+The answer comes back in the language you asked in: a Romanized Telugu question is answered in
+Telugu script, an English one in English.
 
 Modern retrieval systems are built for globally digitised, script-uniform text. Heritage corpora
 break that assumption: the same query arrives as `రామ ఎవరు` or `rama evaru`, PDF extraction mangles
@@ -42,6 +44,7 @@ those as first-class problems.
 | The problem | What VāṇiVerse does |
 | --- | --- |
 | Same query, different scripts | Script detection + Romanized-Telugu transliteration before embedding |
+| Answers in the wrong language | English and Romanized Telugu are both "roman" to the script detector; they are separated before the prompt is chosen, so each gets its own answer language |
 | Telugu PDFs extract badly | Unicode artifact repair (duplicate matras, broken conjuncts, zero-width chars) |
 | Some pages are just pictures | OCR fallback (Tesseract / EasyOCR) for pages with no usable text layer |
 | Generic splitting destroys context | Sentence-aware, overlap-aware chunking with per-chunk metadata |

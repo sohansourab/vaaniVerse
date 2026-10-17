@@ -39,6 +39,20 @@ class FakeProvider:
         return "mocked answer"
 
 
+class RecordingProvider(FakeProvider):
+    """Keeps the prompt it was handed so tests can assert on language routing."""
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.user_prompt: str | None = None
+        self.system_prompt: str | None = None
+
+    def generate(self, prompt, **kwargs):
+        self.user_prompt = prompt
+        self.system_prompt = kwargs.get("system_prompt")
+        return "mocked answer"
+
+
 def _client(monkeypatch, *, default: str = "ollama", groq_configured: bool = False) -> TestClient:
     gen = Generator(provider=default)
     monkeypatch.setattr(gen, "get_provider", lambda name=None: FakeProvider(name or default))
@@ -47,6 +61,17 @@ def _client(monkeypatch, *, default: str = "ollama", groq_configured: bool = Fal
     monkeypatch.setattr(m, "GROQ_CONFIGURED", groq_configured, raising=False)
     monkeypatch.setattr(m, "LLM_PROVIDER", default, raising=False)
     return TestClient(m.app)
+
+
+def _client_with_recorder(monkeypatch, *, default: str = "ollama") -> tuple[TestClient, RecordingProvider]:
+    recorder = RecordingProvider(default)
+    gen = Generator(provider=default)
+    monkeypatch.setattr(gen, "get_provider", lambda name=None: recorder)
+    monkeypatch.setattr(m, "_vector_store", FakeStore(), raising=False)
+    monkeypatch.setattr(m, "_generator", gen, raising=False)
+    monkeypatch.setattr(m, "GROQ_CONFIGURED", False, raising=False)
+    monkeypatch.setattr(m, "LLM_PROVIDER", default, raising=False)
+    return TestClient(m.app), recorder
 
 
 def test_default_provider_is_ollama(monkeypatch):
@@ -91,3 +116,35 @@ def test_health_groq_configured_true(monkeypatch):
     client = _client(monkeypatch, default="ollama", groq_configured=True)
     body = client.get("/health").json()
     assert body["groq_configured"] is True
+
+
+# ── Answer-language routing (regression) ──────────────────────────────────────
+#
+# detect_script reports "roman" for both English and Romanized Telugu. Every
+# "roman" query used to be routed to the English system prompt, whose rule 2
+# forbids Telugu, so a Romanized Telugu query was answered in English even
+# though the Telugu prompt carries a rule for exactly that case.
+
+def test_romanized_telugu_query_reaches_model_with_telugu_prompt(monkeypatch):
+    client, recorder = _client_with_recorder(monkeypatch)
+    resp = client.post("/query", json={"query": "nenu evaru?"})
+    assert resp.status_code == 200
+    assert recorder.system_prompt is not None
+    assert "specializing in Telugu" in recorder.system_prompt
+    # The model is shown the transliterated query, not the Roman input.
+    assert "నేను ఎవరు?" in recorder.user_prompt
+
+
+def test_english_query_reaches_model_with_english_prompt(monkeypatch):
+    client, recorder = _client_with_recorder(monkeypatch)
+    resp = client.post("/query", json={"query": "who am i?"})
+    assert resp.status_code == 200
+    assert "specializing in Telugu" not in recorder.system_prompt
+    assert "who am i?" in recorder.user_prompt
+
+
+def test_native_telugu_query_reaches_model_with_telugu_prompt(monkeypatch):
+    client, recorder = _client_with_recorder(monkeypatch)
+    resp = client.post("/query", json={"query": "నేను ఎవరు?"})
+    assert resp.status_code == 200
+    assert "specializing in Telugu" in recorder.system_prompt

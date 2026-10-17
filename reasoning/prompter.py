@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from core.config import TOP_K
 from core.exceptions import NoContextRetrievedError, PromptConstructionError
+from ingestion.normalizer import is_english_query
 from retrieval.vector_store import RetrievedChunk
 
 # ── Maximum characters per chunk shown in prompt ───────────────────────────────
@@ -66,14 +67,53 @@ STRICT RULES — follow without exception:
 # Internal Builders
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _select_system_prompt(script: str) -> str:
+def _answer_language(script: str, query: str) -> str:
     """
-    Selects the appropriate system prompt based on detected query script.
-    script is the output of ingestion.normalizer.detect_script().
+    Decide which language the answer should be written in.
+
+    `script` alone is not enough to choose a system prompt, because
+    detect_script() reports "roman" for two different situations: a genuine
+    English query, and Romanized Telugu. _SYSTEM_PROMPT_TELUGU already carries
+    the rule for the latter ("If the user query is in Romanized Telugu, respond
+    in Telugu script"), but that rule was unreachable — every Roman query fell
+    through to the English prompt, whose rule 2 forbids Telugu. The visible
+    effect was that "nenu evaru?" was answered in English.
+
+    The disambiguator is the same stopword heuristic the normalizer uses to
+    decide whether to transliterate at all, applied to the *normalized* query:
+    by this point Romanized Telugu has already been transliterated into Telugu
+    script and so no longer looks like English.
+
+    Args:
+        script: Output of detect_script() on the raw query.
+        query:  The query as it will be shown to the model (post-normalize).
+
+    Returns:
+        "telugu", "english" or "mixed".
     """
     if script == "telugu":
-        return _SYSTEM_PROMPT_TELUGU
+        return "telugu"
     if script == "mixed":
+        return "mixed"
+    if script == "roman":
+        return "english" if is_english_query(query) else "telugu"
+    # "unknown" — no alphabetic characters to reason from.
+    return "english"
+
+
+def _select_system_prompt(script: str, query: str = "") -> str:
+    """
+    Selects the appropriate system prompt based on detected query script.
+
+    Args:
+        script: Output of ingestion.normalizer.detect_script().
+        query:  The query text, needed to tell English apart from Romanized
+                Telugu — both are reported as "roman". See _answer_language().
+    """
+    language = _answer_language(script, query)
+    if language == "telugu":
+        return _SYSTEM_PROMPT_TELUGU
+    if language == "mixed":
         return _SYSTEM_PROMPT_MIXED
     return _SYSTEM_PROMPT_ENGLISH
 
@@ -144,7 +184,8 @@ def build_prompt(
         query:   Normalized query string (post normalizer.normalize()).
         chunks:  Retrieved chunks from VectorStore.query() — already
                  filtered by score_threshold and sorted by score desc.
-        script:  Output of detect_script(query) — selects system prompt language.
+        script:  Output of detect_script() on the *raw* query. Combined with
+                 `query` (see _answer_language) this selects the answer language.
 
     Returns:
         PromptPackage with system_prompt, user_prompt, context_chunks, query.
@@ -167,7 +208,7 @@ def build_prompt(
 
     try:
         context_block  = _format_context_block(chunks)
-        system_prompt  = _select_system_prompt(script)
+        system_prompt  = _select_system_prompt(script, query)
         user_prompt    = _build_user_prompt(query, context_block)
     except Exception as exc:
         raise PromptConstructionError(
@@ -184,19 +225,22 @@ def build_prompt(
 
 
 def build_no_result_prompt(query: str, script: str = "roman") -> PromptPackage:
-    fallback_message = (
-        "ఈ సమాచారం అందుబాటులో లేదు."
-        if script == "telugu"
-        else "The requested information is not available in the provided sources."
-    )
+    language = _answer_language(script, query)
+    # A mixed query must not be answered with an English-only sentence, since
+    # _SYSTEM_PROMPT_MIXED tells the model to match the query's language mix.
+    fallback_message = {
+        "telugu": "ఈ సమాచారం అందుబాటులో లేదు.",
+        "mixed":  "ఈ సమాచారం అందుబాటులో లేదు. / "
+                  "The requested information is not available in the provided sources.",
+    }.get(language, "The requested information is not available in the provided sources.")
 
-    system_prompt = _select_system_prompt(script)
+    system_prompt = _select_system_prompt(script, query)
     user_prompt   = (
         f"QUERY: {query}\n\n"
         f"SOURCE BLOCKS: [NONE]\n\n"
         f"INSTRUCTION: No relevant sources were found. "
         f"Respond only with: \"{fallback_message}\" — nothing else. "
-        f"{'Respond in English only.' if script != 'telugu' else ''}"
+        f"{'Respond in English only.' if language == 'english' else ''}"
     )
 
     return PromptPackage(
