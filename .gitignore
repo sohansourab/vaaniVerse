@@ -8,3 +8,8 @@ data/
 *.faiss
 *.pkl
 9.nenu-evarini.pdf
+
+# Evaluation outputs: they contain model answers grounded in the book text,
+# which must never be committed. eval/gold_qa.jsonl (our own questions) IS tracked.
+eval/results.json
+eval/results.jsonl

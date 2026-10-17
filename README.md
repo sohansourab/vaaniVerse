@@ -450,11 +450,16 @@ vaaniVerse/
 │   ├── ingest_documents.py     # batch ingestion CLI
 │   ├── benchmark_retrieval.py  # retrieval latency benchmark
 │   └── evaluate_rag.py         # EM / F1 / citation metrics
+├── eval/
+│   ├── gold_qa.jsonl           # gold set: 30 in-corpus + 10 out-of-domain questions
+│   └── run_eval.py             # retrieval · grounding · latency evaluation
 ├── tests/
 │   ├── test_api_providers.py   # provider routing at the HTTP layer
 │   └── test_llm_providers.py   # provider behaviour in isolation
 ├── docs/
 │   ├── ARCHITECTURE.md         # full design rationale
+│   ├── DESIGN-NOTES.md         # long-form design rationale
+│   ├── EVALUATION.md           # measured results and methodology
 │   └── ROADMAP.md              # milestones and exit criteria
 ├── .streamlit/config.toml      # UI theme
 ├── Dockerfile                  # two-stage, non-root container
@@ -466,6 +471,40 @@ vaaniVerse/
 
 `data/` is **gitignored** and created at runtime — it holds uploaded documents and the vector index.
 The `.pkl` metadata file embeds source text, so it is deliberately never committed.
+
+---
+
+## Evaluation
+
+Measured on the local stack — 40 gold questions (30 in-corpus across Telugu, romanized Telugu and
+English; 10 out-of-domain probes), `qwen2.5:3b` + BGE-M3 + FAISS, `top_k=5`.
+
+| Layer | Metric | Result |
+| --- | --- | --- |
+| Retrieval | **Recall@5** | **0.833** (random baseline 0.152) |
+| Retrieval | MRR | **0.636** |
+| Retrieval | Latency (embed + search) | **277 ms** p50 |
+| Grounding | Out-of-domain questions refused | **10/10 (100%)** |
+| Grounding | Grounded answer rate | **56.7%** (17/30) |
+| Grounding | False abstention on in-corpus questions | 30% |
+| End-to-end | Latency | 6.2 s p50 · 30.8 s p95 |
+
+Recall by query language: English **1.00** · Telugu **0.85** · romanized Telugu **0.60**.
+
+**Honest reading.** Retrieval is solid and works *cross-lingually* — an English question reliably
+surfaces Telugu passages. Out-of-domain questions are refused rather than answered: zero
+hallucinations across 10 probes, including the fabrication traps "Who is the author of this book?"
+and "What is the price of this book?". The cost is a conservative system — the `0.45` score threshold
+also rejects **30%** of genuine questions. And generation quality, not plumbing, is the ceiling at 3B
+parameters.
+
+```bash
+python eval/run_eval.py --skip-query     # retrieval only, ~30 s, no LLM calls
+python eval/run_eval.py                  # full run, ~20 min on a GTX 1650
+```
+
+Full methodology, per-query results, miss analysis and **threats to validity**:
+**[docs/EVALUATION.md](docs/EVALUATION.md)**.
 
 ---
 
@@ -533,6 +572,7 @@ Detailed milestones with tasks and exit criteria live in [docs/ROADMAP.md](docs/
 | --- | --- |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Clean-architecture design, layer contracts, Indic-language policy, evaluation design |
 | [docs/DESIGN-NOTES.md](docs/DESIGN-NOTES.md) | Long-form design rationale (architecture blueprint, multilingual trade-offs, evaluation metrics) |
+| [docs/EVALUATION.md](docs/EVALUATION.md) | Measured retrieval / grounding / latency results, methodology, and threats to validity |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestone-based plan with engineering priorities and exit criteria |
 | [DEPLOY.md](DEPLOY.md) | Container and hosted deployment |
 | [VERIFY.md](VERIFY.md) | Verified local run: commands and observed output |

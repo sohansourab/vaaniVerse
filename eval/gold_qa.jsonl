@@ -1,0 +1,40 @@
+{"id": "t01", "language": "telugu", "in_corpus": true,  "expected_pages": [1],       "topic": "purpose of self-inquiry", "query": "నేను ఎవరు అనే ఆత్మ విచారణ లక్ష్యం ఏమిటి?"}
+{"id": "t02", "language": "telugu", "in_corpus": true,  "expected_pages": [1, 5, 9],  "topic": "true nature", "query": "నా నిజమైన స్వభావం ఏమిటి?"}
+{"id": "t03", "language": "telugu", "in_corpus": true,  "expected_pages": [1, 23],    "topic": "sat-chit-ananda", "query": "సత్-చిత్-ఆనందం అంటే ఏమిటి?"}
+{"id": "t04", "language": "telugu", "in_corpus": true,  "expected_pages": [1, 6, 13], "topic": "am I the body", "query": "నేను ఈ శరీరమా?"}
+{"id": "t05", "language": "telugu", "in_corpus": true,  "expected_pages": [2],        "topic": "pranamaya kosha", "query": "ప్రాణమయ కోశం అంటే ఏమిటి?"}
+{"id": "t06", "language": "telugu", "in_corpus": true,  "expected_pages": [2],        "topic": "manomaya kosha", "query": "మనోమయ కోశం అంటే ఏమిటి?"}
+{"id": "t07", "language": "telugu", "in_corpus": true,  "expected_pages": [3],        "topic": "vijnanamaya kosha", "query": "విజ్ఞానమయ కోశం అంటే ఏమిటి?"}
+{"id": "t08", "language": "telugu", "in_corpus": true,  "expected_pages": [4],        "topic": "anandamaya kosha", "query": "ఆనందమయ కోశం అంటే ఏమిటి?"}
+{"id": "t09", "language": "telugu", "in_corpus": true,  "expected_pages": [15],       "topic": "definition of awareness", "query": "ఎరుక అంటే ఏమిటి?"}
+{"id": "t10", "language": "telugu", "in_corpus": true,  "expected_pages": [17],       "topic": "awareness has no boundaries", "query": "ఎరుకకు సరిహద్దులు ఉన్నాయా?"}
+{"id": "t11", "language": "telugu", "in_corpus": true,  "expected_pages": [14],       "topic": "awareness in deep sleep", "query": "గాఢ నిద్రలో ఎరుక ఉంటుందా?"}
+{"id": "t12", "language": "telugu", "in_corpus": true,  "expected_pages": [21, 22],   "topic": "ocean and waves", "query": "మీరు అలలు కాదు, మీరు సముద్రం అనే ఉదాహరణ అర్థం ఏమిటి?"}
+{"id": "t13", "language": "telugu", "in_corpus": true,  "expected_pages": [21, 24],   "topic": "limited vs unlimited awareness", "query": "పరిమిత ఎరుక మరియు అపరిమిత ఎరుక మధ్య తేడా ఏమిటి?"}
+{"id": "t14", "language": "telugu", "in_corpus": true,  "expected_pages": [10, 11],   "topic": "knower and known", "query": "కర్త మరియు వస్తువు మధ్య నిజమైన విభజన ఉందా?"}
+{"id": "t15", "language": "telugu", "in_corpus": true,  "expected_pages": [6, 7],     "topic": "how to meditate", "query": "ధ్యానం ఎలా చేయాలి?"}
+{"id": "t16", "language": "telugu", "in_corpus": true,  "expected_pages": [12],       "topic": "three stages", "query": "ఆత్మ విచారణలో మూడు దశలు ఏమిటి?"}
+{"id": "t17", "language": "telugu", "in_corpus": true,  "expected_pages": [18],       "topic": "one awareness in all beings", "query": "సమస్త జీవులలో ఒకే ఎరుక ఉందా?"}
+{"id": "t18", "language": "telugu", "in_corpus": true,  "expected_pages": [29, 30],   "topic": "instant manifestation", "query": "తక్షణ వ్యక్తీకరణ అంటే ఏమిటి?"}
+{"id": "t19", "language": "telugu", "in_corpus": true,  "expected_pages": [23, 29],   "topic": "when duality disappears", "query": "ద్వంద్వం ఎప్పుడు అదృశ్యమవుతుంది?"}
+{"id": "t20", "language": "telugu", "in_corpus": true,  "expected_pages": [31, 32],   "topic": "abiding as awareness", "query": "అపరిమిత ఎరుకగా ఎలా ఉండాలి?"}
+{"id": "r01", "language": "roman",  "in_corpus": true,  "expected_pages": [1],        "topic": "who am I", "query": "nenu evaru?"}
+{"id": "r02", "language": "roman",  "in_corpus": true,  "expected_pages": [15],       "topic": "what is awareness", "query": "eruka ante emiti?"}
+{"id": "r03", "language": "roman",  "in_corpus": true,  "expected_pages": [14],       "topic": "awareness in deep sleep", "query": "ghadha nidralo eruka untunda?"}
+{"id": "r04", "language": "roman",  "in_corpus": true,  "expected_pages": [22, 25],   "topic": "ocean and waves", "query": "samudram mariyu alalu udaharana emiti?"}
+{"id": "r05", "language": "roman",  "in_corpus": true,  "expected_pages": [1, 5],     "topic": "true nature", "query": "nija svarupam ante emiti?"}
+{"id": "e01", "language": "english", "in_corpus": true, "expected_pages": [1],        "topic": "purpose of self-inquiry", "query": "What is the purpose of self-inquiry?"}
+{"id": "e02", "language": "english", "in_corpus": true, "expected_pages": [15],       "topic": "definition of awareness", "query": "What is awareness?"}
+{"id": "e03", "language": "english", "in_corpus": true, "expected_pages": [1, 6, 13], "topic": "body vs witness", "query": "Am I the body or the witness?"}
+{"id": "e04", "language": "english", "in_corpus": true, "expected_pages": [22, 25],   "topic": "ocean and waves", "query": "What is the ocean and waves analogy?"}
+{"id": "e05", "language": "english", "in_corpus": true, "expected_pages": [1, 23],    "topic": "sat-chit-ananda", "query": "What is sat-chit-ananda?"}
+{"id": "o01", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain: politics", "query": "Who is the current Chief Minister of Andhra Pradesh?"}
+{"id": "o02", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain: geography", "query": "What is the capital of Australia?"}
+{"id": "o03", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain: cooking", "query": "How do I bake a chocolate cake?"}
+{"id": "o04", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain: history", "query": "What year did the Second World War end?"}
+{"id": "o05", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain: weather", "query": "What is the weather in Hyderabad today?"}
+{"id": "o06", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain: book metadata (author not stated)", "query": "Who is the author of this book?"}
+{"id": "o07", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain: book metadata (price not stated)", "query": "What is the price of this book?"}
+{"id": "o08", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain: software", "query": "How do I install FAISS with pip?"}
+{"id": "o09", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain: demographics", "query": "What is the population of Telangana?"}
+{"id": "o10", "language": "telugu",  "in_corpus": false, "expected_pages": [], "topic": "out-of-domain: geography in Telugu", "query": "భారతదేశ రాజధాని ఏమిటి?"}
