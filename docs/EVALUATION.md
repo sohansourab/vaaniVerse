@@ -3,10 +3,11 @@
 Measured results for the VāṇiVerse retrieval and generation pipeline. Every number on this page
 came from a script in this repository, run against the local stack — none are estimated.
 
-**Headline:** retrieval finds an answer-bearing page for **83%** of in-corpus questions (5.5× the
+**Headline:** retrieval finds an answer-bearing page for **90%** of in-corpus questions (5.9× the
 random baseline), **100%** of out-of-domain questions are refused rather than hallucinated, and the
-retrieval stage answers in **~277 ms**. The weak points are romanized-Telugu retrieval (**60%**) and
-the 3B local model's generation quality.
+retrieval stage answers in **~277 ms**. The weak points are the 3B local model's generation quality
+and the fixed relevance threshold. Romanized-Telugu retrieval rose from **60% to 100%** after the
+transliteration fix — see [§5](#5-change-log).
 
 ---
 
@@ -54,9 +55,9 @@ reading the document. An answer counts as retrieved if **any** expected page app
 
 | Metric | Value |
 | --- | --- |
-| **Recall@5** | **0.833** (25/30) |
-| Precision@5 | 0.227 |
-| **MRR** | **0.636** |
+| **Recall@5** | **0.900** (27/30) |
+| Precision@5 | 0.240 |
+| **MRR** | **0.686** |
 | *Random baseline recall@5* | *0.152 (5/33)* |
 
 **Recall by query language** — the interesting part:
@@ -65,7 +66,7 @@ reading the document. An answer counts as retrieved if **any** expected page app
 | --- | --- | --- | --- |
 | English | 5 | **1.000** | 0.840 |
 | Telugu | 20 | 0.850 | 0.618 |
-| Romanized Telugu | 5 | **0.600** | 0.500 |
+| Romanized Telugu | 5 | **1.000** | 0.800 |
 
 Retrieval latency: **p50 277 ms**, p95 288 ms, max 479 ms (first call 8.1 s — one-time model load).
 
@@ -75,14 +76,14 @@ The threshold is the system's relevance gate. Its behaviour is the single most c
 
 | Group | Queries passing the gate |
 | --- | --- |
-| In-corpus | 21/30 (70%) |
+| In-corpus | 23/30 (76.7%) |
 | Out-of-domain | **0/10 (0%)** |
 
 Top-1 similarity score distribution:
 
 | Group | min | median | max |
 | --- | --- | --- | --- |
-| In-corpus | 0.362 | **0.533** | 0.710 |
+| In-corpus | 0.362 | **0.546** | 0.710 |
 | Out-of-domain | 0.295 | **0.346** | 0.447 |
 
 The distributions separate at the median but **overlap** (in-corpus min 0.362 < out-of-domain max
@@ -91,6 +92,11 @@ out-of-domain queries. This is the fundamental limit of a fixed similarity cutof
 small embedding model, and it is why a reranker is the next real improvement.
 
 ### 3. End-to-end grounding (40 queries, 0 HTTP errors)
+
+> ⚠️ **This section has not been re-run** since the transliteration fix in [§5](#5-change-log). It
+> reflects the previous normalizer, so the refusal and abstention figures below are stale — the
+> retrieval gate pass rate already improved from 70% to 76.7%, so false abstention should fall from
+> 30% to roughly 23%. Treat these as a pre-fix baseline until re-measured.
 
 | Metric | Value |
 | --- | --- |
@@ -127,21 +133,23 @@ Latency: p50 **6.16 s** / p95 30.8 s overall. Answered queries p50 **15.8 s**; r
    averages, which is the more meaningful denominator. Both are reported above; only one is a
    headline.
 
-### 4. Retrieval misses (5 of 30)
+### 4. Retrieval misses (3 of 30)
 
 | Query | Expected page(s) | Retrieved | Note |
 | --- | --- | --- | --- |
 | `t07` విజ్ఞానమయ కోశం అంటే ఏమిటి? | 3 | 2, 30, 8, 7, 22 | returned page 2, which introduces the kosha framework — adjacent, not wrong |
 | `t08` ఆనందమయ కోశం అంటే ఏమిటి? | 4 | 2, 30, 23, 22, 7 | same; pages 3–4 continue a list that starts on page 2 |
 | `t19` ద్వంద్వం ఎప్పుడు అదృశ్యమవుతుంది? | 23, 29 | 19, 14, 26, 20, 7 | genuine miss |
-| `r02` eruka ante emiti? | 15 | 21, 24, 32, 25, 20 | genuine miss (romanized) |
-| `r05` nija svarupam ante emiti? | 1, 5 | 31, 6, 24, 26, 12 | genuine miss (romanized) |
+
+Both previous romanized misses (`r02`, `r05`) are now retrieved at ranks 1 and 2 — see [§5](#5-change-log).
+Every remaining miss is native Telugu and `t07`/`t08` are "adjacent page" cases rather than genuine
+failures.
 
 ---
 
 ## Findings
 
-1. **Retrieval works, and works cross-lingually.** 83% recall@5 against a 15% random baseline. An
+1. **Retrieval works, and works cross-lingually.** 90% recall@5 against a 15% random baseline. An
    **English** question reliably surfaces **Telugu** passages (5/5) — the multilingual embedding
    model carries the cross-lingual load, not the transliterator.
 2. **Refusal is the strongest result.** 10/10 out-of-domain questions were refused with an explicit
@@ -151,13 +159,82 @@ Latency: p50 **6.16 s** / p95 30.8 s overall. Answered queries p50 **15.8 s**; r
 3. **The threshold is a blunt instrument.** It delivers that 100% precision at a cost of 30% false
    abstention on real questions. This is the clearest actionable finding: the system is
    *conservative*, not *wrong*. Tuning `SCORE_THRESHOLD` trades recall for out-of-domain leakage.
-4. **Romanized Telugu is the weakest path** (60% vs 85% Telugu / 100% English). The likely cause is
-   the rule-based Roman→Telugu transliteration map producing a query that differs from the indexed
-   text; English avoids that step entirely and benefits from BGE-M3's cross-lingual training. Stated
-   as a hypothesis — this evaluation does not isolate the transliterator.
+4. **Romanized Telugu was the weakest path, and the hypothesis about why was correct.** The original
+   result was 60% (vs 85% Telugu / 100% English), attributed to the rule-based Roman→Telugu map
+   producing a query that differed from the indexed text. That was stated as a hypothesis because the
+   evaluation did not isolate the transliterator. It has since been tested directly, and the failure
+   was more basic than a *bad* transliteration — for pure-Roman input the transliterator **never ran
+   at all**. Romanized recall is now 100%. See [§5](#5-change-log).
 5. **Generation quality, not plumbing, is the ceiling.** `qwen2.5:3b` produced one prompt-template
    echo and at least one false refusal on a question the corpus answers. The wiring is correct; this
    is a model-size limit, and the evidence for using the Groq 70B provider for any real use.
+
+---
+
+## 5. Change log
+
+### Romanized-Telugu transliteration fix
+
+**Scope:** the retrieval layer was re-measured. The end-to-end section ([§3](#3-end-to-end-grounding-40-queries-0-http-errors))
+was **not** re-run and is stale.
+
+Two independent defects in `ingestion/normalizer.py` were found and fixed. The first is a routing
+bug; the second is the reason the first existed.
+
+1. **The syllable walk never ran on pure-Roman input.** For `roman`-script text the code applied only
+   `_PHRASE_MAP` — 17 exact-substring phrases. Four of the five Romanized gold questions matched
+   nothing in it and reached the embedder as **raw ASCII**:
+
+   | id | query | `normalize()` before | after |
+   | --- | --- | --- | --- |
+   | `r01` | `nenu evaru?` | నేను ఎవరు? *(phrase map)* | నేను ఎవరు? |
+   | `r02` | `eruka ante emiti?` | *unchanged* | ఎరుక అన్తె ఎమితి? |
+   | `r03` | `ghadha nidralo eruka untunda?` | *unchanged* | ఘధ నిద్రలో ఎరుక ఉన్తున్ద? |
+   | `r04` | `samudram mariyu alalu udaharana emiti?` | *unchanged* | సముద్రం మరియు అలలు ఉదహరన ఎమితి? |
+   | `r05` | `nija svarupam ante emiti?` | *unchanged* | నిజ స్వరుపం అన్తె ఎమితి? |
+
+2. **The syllable map could not express a consonant followed by a vowel.** It emitted *independent*
+   vowel letters after consonants — `eruka` became `ఎరఉకఅ` instead of `ఎరుక` — which is precisely why
+   the walk had been gated to `mixed`-script text. It was replaced with an abugida-aware state
+   machine: a vowel after a consonant becomes a dependent sign (matra), a consonant after a consonant
+   takes a virama, and word-final `m` becomes anusvara. The consonant table was also switched to the
+   ISO 15919 default of dental `t`/`d`/`n`, which is what makes `samudram` → `సముద్రం` exact.
+
+**Before/after** — identical gold set, identical config, retrieval layer only:
+
+| Metric | Before | After |
+| --- | --- | --- |
+| Recall@5 | 0.833 | **0.900** |
+| MRR | 0.636 | **0.686** |
+| Precision@5 | 0.227 | 0.240 |
+| Romanized recall@5 | 0.600 | **1.000** |
+| Telugu recall@5 | 0.850 | 0.850 |
+| English recall@5 | 1.000 | 1.000 |
+| In-corpus gate pass | 70% | 76.7% |
+| Out-of-domain gate pass | 0% | **0%** |
+
+Reproduce with the API running: `python eval/run_eval.py --skip-query`.
+
+**How much to trust the 0.600 → 1.000 jump: not much on its own.** The Romanized group is **5
+questions**, so that swing is *two* questions, and the interval on n=5 is enormous. The overall
+figure moves 25/30 → 27/30 for the same reason. What *is* defensible: the fix is a rule set with **no
+benchmark-specific vocabulary added**; the two questions that flipped were the two previously
+identified as genuine misses; and there was no regression on the other 35 questions or on
+out-of-domain rejection.
+
+**Limitations introduced or left in place:**
+
+- **The English guard is stopword-based** (≥2 English stopwords ⇒ skip transliteration). A
+  stopword-free English string is indistinguishable from Romanized Telugu and will be transliterated
+  (`"hello"` → `హెల్లొ`). A language identifier, not a rule, is the real fix.
+- **Ad-hoc phonetic spellings are not recoverable by any rule set.** The gold set's Romanization is
+  not a consistent scheme — `emiti` is used for ఏమిటి and `ante` for అంటే — so they transliterate to
+  ఎమితి and అన్తె. These are high-frequency function words, so a future improvement should target
+  them, via a general Telugu lexicon rather than by adding this gold set's vocabulary.
+- **The accepted input alphabet is lower-case ASCII**, so retroflex (ట/డ/ణ) cannot be expressed.
+- **No held-out Romanized set exists.** The fix was written before being measured against this set
+  and added no vocabulary from it, but a second, unseen Romanized set is the only way to make the
+  figure fully trustworthy.
 
 ---
 

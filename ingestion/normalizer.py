@@ -6,20 +6,50 @@ from core.exceptions import NormalizationError
 # Telugu Unicode block: U+0C00–U+0C7F
 _TELUGU_RANGE = re.compile(r"[\u0C00-\u0C7F]")
 
-# ITRANS-adjacent Romanized Telugu → Telugu script syllable map.
-# Ordered longest-match first to prevent partial substitutions.
-# Only ever applied to MIXED-script text — never to pure Roman/English.
-_ROMAN_TO_TELUGU: list[tuple[str, str]] = [
-    ("aa", "ా"), ("ii", "ీ"), ("uu", "ూ"), ("ee", "ే"), ("oo", "ో"),
-    ("ai", "ై"), ("au", "ౌ"), ("ch", "చ"), ("sh", "శ"), ("th", "థ"),
-    ("dh", "ధ"), ("ph", "ఫ"), ("bh", "భ"), ("gh", "ఘ"), ("kh", "ఖ"),
-    ("jh", "ఝ"), ("ng", "ఙ"), ("ny", "ఞ"),
-    ("a", "అ"), ("i", "ఇ"), ("u", "ఉ"), ("e", "ఎ"), ("o", "ఒ"),
-    ("k", "క"), ("g", "గ"), ("j", "జ"), ("t", "ట"), ("d", "డ"),
+# ── Romanized-Telugu transliteration tables ─────────────────────────────────
+# Telugu is an abugida: a consonant carries an inherent "a", and every other
+# vowel is written as a dependent sign (matra) attached to that consonant.
+# A flat 1:1 substitution therefore cannot work — it emits the *independent*
+# vowel letter in vowel position too, turning "eruka" into "ఎరఉకఅ" instead of
+# "ఎరుక". `_CONSONANTS` and `_VOWELS` are the two halves that the state
+# machine in `_transliterate_token` recombines.
+#
+# Applied to MIXED-script text, and to pure-Roman text that failed the
+# English-query check. The tables are scheme-agnostic rules, not a word list:
+# no corpus- or benchmark-specific vocabulary is special-cased here.
+
+# Consonants, longest roman form first (so "kh" matches before "k").
+# Plain "t"/"d"/"n" map to the DENTAL series, per ISO 15919. The accepted
+# input alphabet is lower-case ASCII only, so retroflex (ట/డ/ణ) cannot be
+# expressed — inputs that need it will transliterate to the dental series.
+_CONSONANTS: list[tuple[str, str]] = [
+    ("kh", "ఖ"), ("gh", "ఘ"), ("ch", "చ"), ("jh", "ఝ"), ("ny", "ఞ"),
+    ("ng", "ఙ"), ("th", "థ"), ("dh", "ధ"), ("ph", "ఫ"), ("bh", "భ"),
+    ("sh", "శ"),
+    ("k", "క"), ("g", "గ"), ("j", "జ"), ("t", "త"), ("d", "ద"),
     ("n", "న"), ("p", "ప"), ("b", "బ"), ("m", "మ"), ("y", "య"),
     ("r", "ర"), ("l", "ల"), ("v", "వ"), ("s", "స"), ("h", "హ"),
     ("f", "ఫ"), ("z", "జ"),
 ]
+
+# Vowels: (roman, independent form, dependent sign / matra).
+# An empty matra is the inherent vowel — after a consonant it is written by
+# adding nothing at all.
+_VOWELS: list[tuple[str, str, str]] = [
+    ("aa", "ఆ", "ా"), ("ai", "ఐ", "ై"), ("au", "ఔ", "ౌ"),
+    ("ii", "ఈ", "ీ"), ("ee", "ఏ", "ే"), ("uu", "ఊ", "ూ"), ("oo", "ఓ", "ో"),
+    ("a", "అ", ""), ("i", "ఇ", "ి"), ("u", "ఉ", "ు"),
+    ("e", "ఎ", "ె"), ("o", "ఒ", "ొ"),
+]
+
+# Every roman unit, longest first, tagged so the state machine can tell
+# consonants from vowels. `sorted` is stable, so at equal length consonants
+# (listed first) win — "sh" matches before "s" + "h".
+_ROMAN_UNITS: list[tuple[str, str, object]] = sorted(
+    [(r, "c", t) for r, t in _CONSONANTS]
+    + [(r, "v", (i, m)) for r, i, m in _VOWELS],
+    key=lambda unit: -len(unit[0]),
+)
 
 # Romanized Telugu phrases → Telugu script.
 # Safe for PURE Roman queries — exact substring match, no syllable walk.
@@ -47,6 +77,7 @@ _PHRASE_MAP: list[tuple[str, str]] = [
 
 # ── Telugu Unicode constants ────────────────────────────────────────────────
 _VIRAMA = "\u0C4D"  # ్  (halant / killer)
+_ANUSVARA = "\u0C02"  # ం  (word-final or pre-consonantal "m")
 
 # Dependent vowel signs (matras) — U+0C3E to U+0C4C + U+0C4E-U+0C56
 _DUPLICATE_MATRA = re.compile(r"([\u0C3E-\u0C4C\u0C4E-\u0C56])\1+")
@@ -159,43 +190,98 @@ def _apply_phrase_map(text: str) -> str:
     return lowered
 
 
+def _match_unit(token: str, index: int) -> tuple[str, str, object] | None:
+    """Return the longest roman unit at `index` as (roman, kind, value)."""
+    for roman, kind, value in _ROMAN_UNITS:
+        if token.startswith(roman, index):
+            return roman, kind, value
+    return None
+
+
+def _transliterate_token(token: str) -> str:
+    """
+    Transliterate one Romanized-Telugu word using abugida rules.
+
+    A consonant carries an inherent "a"; a vowel that follows a consonant is
+    written as a dependent sign rather than an independent letter; a consonant
+    that follows another consonant takes a virama to form a cluster; and a
+    word-final (or pre-consonantal) "m" becomes anusvara.
+
+    Deliberately scheme-agnostic — it assumes *consistent* Romanization and
+    special-cases no vocabulary. Ad-hoc phonetic spellings are not recoverable
+    by any fixed rule set and will come out wrong: "emiti" for ఏమిటి yields
+    ఎమిటి, and "ghadha" for గాఢ yields ఘధ.
+    """
+    out: list[str] = []
+    prev_consonant = False
+    i = 0
+
+    while i < len(token):
+        unit = _match_unit(token, i)
+        if unit is None:
+            # Punctuation, digits, or an unmapped character — pass through and
+            # close any consonant left hanging.
+            if prev_consonant:
+                out.append(_VIRAMA)
+                prev_consonant = False
+            out.append(token[i])
+            i += 1
+            continue
+
+        roman, kind, value = unit
+
+        if kind == "c":
+            if roman == "m":
+                following = _match_unit(token, i + len(roman))
+                if following is None or following[1] == "c":
+                    # Word-final or before another consonant → anusvara.
+                    out.append(_ANUSVARA)
+                    prev_consonant = False
+                    i += len(roman)
+                    continue
+            if prev_consonant:
+                out.append(_VIRAMA)
+            out.append(value)  # type: ignore[arg-type]
+            prev_consonant = True
+        else:
+            independent, matra = value  # type: ignore[misc]
+            if matra == "":
+                # Inherent "a": written only when it is not carried by a
+                # preceding consonant.
+                if not prev_consonant:
+                    out.append(independent)
+            else:
+                out.append(matra if prev_consonant else independent)
+            prev_consonant = False
+
+        i += len(roman)
+
+    if prev_consonant:
+        out.append(_VIRAMA)
+    return "".join(out)
+
+
 def transliterate_roman_to_telugu(text: str) -> str:
     """
     Convert Romanized Telugu text to Telugu script.
 
     Strategy:
-        1. Apply the phrase-level map first (preserves multi-word idioms).
-        2. Fall back to syllable-level longest-match substitution for
-           any tokens the phrase map did not cover.
+        1. Apply the phrase-level map first (preserves multi-word idioms that
+           Romanization rules would otherwise break apart).
+        2. Transliterate each remaining Roman token with the abugida-aware
+           state machine in `_transliterate_token`.
 
-    This is the "aggressive" path and should only be called for text
-    already confirmed to be Romanized Telugu (mixed script, or roman
-    script that failed the English-query check) — never on plain English.
+    Called for MIXED-script text and for pure-Roman text that failed the
+    English-query check — never on plain English.
     """
     lowered = _apply_phrase_map(text)
 
-    tokens = lowered.split()
     result_tokens: list[str] = []
-
-    for token in tokens:
+    for token in lowered.split():
         if _TELUGU_RANGE.search(token):
             result_tokens.append(token)
-            continue
-
-        output = ""
-        i = 0
-        while i < len(token):
-            matched = False
-            for roman, telugu in _ROMAN_TO_TELUGU:
-                if token[i:].startswith(roman):
-                    output += telugu
-                    i += len(roman)
-                    matched = True
-                    break
-            if not matched:
-                output += token[i]  # passthrough punctuation / digits
-                i += 1
-        result_tokens.append(output)
+        else:
+            result_tokens.append(_transliterate_token(token))
 
     return " ".join(result_tokens)
 
@@ -212,8 +298,8 @@ def normalize(text: str, transliterate: bool = True) -> str:
           → script-aware transliteration:
                 telugu  → no-op, already native script
                 roman   → English query?  skip entirely
-                          else apply phrase map only (safe, no syllable walk)
-                mixed   → full syllable-level transliteration
+                          else phrase map + abugida state machine
+                mixed   → full transliteration
           → collapse whitespace
 
     Args:
@@ -243,11 +329,13 @@ def normalize(text: str, transliterate: bool = True) -> str:
         text = repair_telugu_unicode(text)
 
     if transliterate:
-        if script == "roman" and not is_english_query(text):
-            # Likely Romanized Telugu, not English — safe phrase substitution
-            text = _apply_phrase_map(text)
-        elif script == "mixed":
-            # Telugu + Roman interleaved — full syllable transliteration
+        if script == "mixed":
+            # Telugu + Roman interleaved — full transliteration
+            text = transliterate_roman_to_telugu(text)
+        elif script == "roman" and not is_english_query(text):
+            # Likely Romanized Telugu, not English — phrase map, then the
+            # abugida state machine. Previously this path applied the phrase
+            # map only, which left ~all Romanized queries untransliterated.
             text = transliterate_roman_to_telugu(text)
         # script == "telugu": no-op
         # script == "roman" AND is_english_query(): no-op, leave English alone

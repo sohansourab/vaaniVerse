@@ -54,7 +54,7 @@ those as first-class problems.
 
 > **Status:** Phases 1–2 complete — the end-to-end pipeline runs, the API and UI are live, the
 > provider switch (Ollama ⇆ Groq) is implemented and tested, and retrieval is measured at
-> **83% recall@5** ([docs/EVALUATION.md](docs/EVALUATION.md)). Phase 3 (robustness: transliteration,
+> **90% recall@5** ([docs/EVALUATION.md](docs/EVALUATION.md)). Phase 3 (robustness: transliteration,
 > reranking, OCR) is in progress. OCR and multi-language expansion are roadmap items, not shipped
 > features. See [Known limitations](#known-limitations).
 
@@ -230,13 +230,20 @@ query is transliterated or left alone:
 | --- | --- | --- |
 | `telugu` | Telugu codepoints > 60% of letters | Unicode repair only — already native script |
 | `roman` + English stopwords | ≥ 2 English function words | **No transliteration** — protects "who am I" from being mangled |
-| `roman` (not English) | otherwise | Phrase-map substitution only (safe, no syllable walk) |
-| `mixed` | neither threshold met | Full syllable-level transliteration to Telugu |
+| `roman` (not English) | otherwise | Phrase map, then the abugida-aware state machine |
+| `mixed` | neither threshold met | Full transliteration to Telugu |
 | `unknown` | no letters at all | Passed through |
 
 The English-stopword guard exists because transliterating `who am i` syllable-by-syllable produces
 garbage. `detect_script()` runs on the **raw** query, before normalization, so the decision is never
 based on already-mutated text.
+
+> **Note on the abugida rules.** Telugu consonants carry an inherent `a`, and any other vowel is a
+> dependent sign attached to that consonant — so a flat letter-by-letter substitution cannot work.
+> The state machine emits matras after consonants, a virama in clusters, and anusvara for word-final
+> `m`, which is what turns `eruka` into `ఎరుక` rather than `ఎరఉకఅ`. Plain `t`/`d`/`n` follow the
+> ISO 15919 dental default. Spellings that are not a consistent Romanization (the gold set's `emiti`
+> for ఏమిటి) are not recoverable by rules — see [Known limitations](#known-limitations).
 
 ---
 
@@ -483,22 +490,28 @@ English; 10 out-of-domain probes), `qwen2.5:3b` + BGE-M3 + FAISS, `top_k=5`.
 
 | Layer | Metric | Result |
 | --- | --- | --- |
-| Retrieval | **Recall@5** | **0.833** (random baseline 0.152) |
-| Retrieval | MRR | **0.636** |
+| Retrieval | **Recall@5** | **0.900** (random baseline 0.152) |
+| Retrieval | MRR | **0.686** |
 | Retrieval | Latency (embed + search) | **277 ms** p50 |
-| Grounding | Out-of-domain questions refused | **10/10 (100%)** |
-| Grounding | Grounded answer rate | **56.7%** (17/30) |
-| Grounding | False abstention on in-corpus questions | 30% |
-| End-to-end | Latency | 6.2 s p50 · 30.8 s p95 |
+| Retrieval | In-corpus queries clearing the 0.45 gate | 76.7% |
+| Retrieval | Out-of-domain queries clearing the 0.45 gate | **0/10 (0%)** |
+| Grounding | Out-of-domain questions refused | **10/10 (100%)** ¹ |
+| Grounding | Grounded answer rate | **56.7%** (17/30) ¹ |
+| Grounding | False abstention on in-corpus questions | 30% ¹ |
+| End-to-end | Latency | 6.2 s p50 · 30.8 s p95 ¹ |
 
-Recall by query language: English **1.00** · Telugu **0.85** · romanized Telugu **0.60**.
+Recall by query language: English **1.00** · Telugu **0.85** · romanized Telugu **1.00**.
+
+¹ Measured **before** the romanized-transliteration fix, and not yet re-run — these rows will move
+(fewer false abstentions) once they are. Every retrieval-layer row, including both gate rates, was
+re-measured after it. See [docs/EVALUATION.md](docs/EVALUATION.md) for the before/after detail.
 
 **Honest reading.** Retrieval is solid and works *cross-lingually* — an English question reliably
 surfaces Telugu passages. Out-of-domain questions are refused rather than answered: zero
 hallucinations across 10 probes, including the fabrication traps "Who is the author of this book?"
 and "What is the price of this book?". The cost is a conservative system — the `0.45` score threshold
-also rejects **30%** of genuine questions. And generation quality, not plumbing, is the ceiling at 3B
-parameters.
+also stops **23.3%** of genuine questions at the retrieval gate. And generation quality, not plumbing,
+is the ceiling at 3B parameters.
 
 ```bash
 python eval/run_eval.py --skip-query     # retrieval only, ~30 s, no LLM calls
@@ -515,10 +528,11 @@ Full methodology, per-query results, miss analysis and **threats to validity**:
 ```bash
 pip install -r requirements-dev.txt
 pytest -q
-# 15 passed
+# 35 passed
 ```
 
-The suite covers the provider contract end to end without needing Ollama, Groq, or a GPU:
+The suite covers the provider contract and normalization end to end without needing Ollama, Groq, or
+a GPU:
 
 - default provider is `ollama`; a per-request override is honoured
 - an unknown provider returns **400** with no downstream work

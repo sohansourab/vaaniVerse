@@ -14,7 +14,7 @@ file wins.
 
 | Milestone | Focus | Status |
 | --- | --- | --- |
-| **1 — Foundation & Stability** | Core pipeline, provider switch, config, API/ingestion docs | ✅ Complete, except transliteration quality |
+| **1 — Foundation & Stability** | Core pipeline, provider switch, config, API/ingestion docs | ✅ Complete |
 | **2 — Retrieval Quality & Evaluation** | Gold set, retrieval + grounding metrics, per-language analysis | ✅ Complete, except nDCG/MAP and data-driven tuning |
 | **3 — Robustness & Document Handling** | Transliteration, reranking, layout, token estimation, OCR, provenance | 🔄 In progress |
 | **4 — Cultural Intelligence** | Inscriptions, historical documents, heritage knowledge graph, community workflows | Planned |
@@ -34,10 +34,10 @@ Stabilize the core retrieval and generation pipeline for Telugu, Romanized Telug
 
 ### Status
 
-✅ **Complete, with one exception.** The pipeline, provider switch, configuration and documentation are
-done and covered by 15 passing tests. The transliteration heuristic exists but is measurably weak:
-romanized-Telugu retrieval is **60%** against **85%** for native Telugu. That gap is carried into
-milestone 3.
+✅ **Complete.** The pipeline, provider switch, configuration and documentation are done and covered by
+35 passing tests. The transliteration heuristic shipped in this milestone was measurably weak —
+Romanized-Telugu retrieval was **60%** against **85%** for native Telugu — and has since been fixed in
+milestone 3 (**100%**; see [EVALUATION.md §5](EVALUATION.md#5-change-log)).
 
 ### Tasks
 
@@ -97,15 +97,17 @@ content, and the weakest query path.
 
 ### Status
 
-🔄 **In progress.** Two workstreams are active, both chosen because the evaluation identified them as
-the measured weak points: **transliteration** (romanized retrieval at 60%) and **reranking** (the
-0.45 threshold yields 100% out-of-domain rejection but 30% false abstention, and the in-corpus and
-out-of-domain score distributions overlap, so no fixed cutoff can fix it). OCR is **not started** —
-no OCR code exists in the repository.
+🔄 **In progress.** **Transliteration is done** — the pure-Roman path ran no syllable walk at all, and
+four of five Romanized gold questions reached the embedder as raw ASCII; Romanized recall went
+**60% → 100%** and overall **0.833 → 0.900** with no out-of-domain regression
+([EVALUATION.md §5](EVALUATION.md#5-change-log)). Still active: **reranking** — the 0.45 threshold
+rejects 100% of out-of-domain queries but also stops 23.3% of genuine ones, and the in-corpus and
+out-of-domain score distributions overlap, so no fixed cutoff can fix it. OCR is **not started** — no
+OCR code exists in the repository.
 
 ### Tasks
 
-- **[active]** fix the Romanized-Telugu transliteration path — measured 60% recall@5 vs 85% native
+- **[done]** fix the Romanized-Telugu transliteration path — 60% → 100% recall@5
 - **[active]** add a reranking stage to replace the fixed `score_threshold` cutoff
 - improve OCR pipeline for scanned manuscripts and degraded PDFs
 - add OCR-first ingestion for manuscripts and images, with page-level metadata and captions
@@ -222,10 +224,14 @@ Planned.
 The previous list here (benchmark dataset, evaluation scripts, docs folder, results schema,
 normalization regression tests) is **done** — see milestone 2. Current next steps:
 
-- fix the Romanized-Telugu transliteration path, then re-run `eval/run_eval.py --skip-query` to
-  measure the delta against the recorded 60% baseline
+- **[done]** fix the Romanized-Telugu transliteration path — verified 60% → 100% via
+  `eval/run_eval.py --skip-query`
 - add a reranker stage and re-run the threshold study to test whether false abstention falls
   without losing the 10/10 out-of-domain refusal
+- re-run the end-to-end evaluation ([EVALUATION.md §3](EVALUATION.md#3-end-to-end-grounding-40-queries-0-http-errors)
+  is stale — it predates the transliteration fix)
 - implement nDCG and MAP to close out milestone 2's metric list
+- author a held-out Romanized-Telugu question set so the transliteration gain is not measured on the
+  same five questions that motivated it
 - add a scanned/degraded PDF fixture so milestone 3's OCR work is testable
 - overwrite the hand-set `chunk_size` / `top_k` / `score_threshold` with values derived from a sweep
