@@ -364,7 +364,16 @@ def main() -> int:
 
     # ── live run ──────────────────────────────────────────────────────────────
     api = args.api_url.rstrip("/")
-    with httpx.Client(timeout=600.0) as client:
+    # Reuse a single connection for the whole run. httpx would otherwise drop and
+    # re-open a connection between every query (its default keepalive_expiry is
+    # 5s, and these queries are ~55s apart), and each re-open is a fresh accept on
+    # the server. On Windows, uvicorn's asyncio accept loop intermittently dies
+    # with WinError 64 on exactly that path — the run then continues on the
+    # surviving keep-alive connection until it, too, is dropped. A long expiry on
+    # both sides means the socket is accepted once and reused. Pair this with
+    # `--timeout-keep-alive 300` on the server, which is longer than one query.
+    limits = httpx.Limits(max_keepalive_connections=2, keepalive_expiry=900.0)
+    with httpx.Client(timeout=600.0, limits=limits) as client:
         health = client.get(f"{api}/health").json()
         print(f"health: {json.dumps(health)}", flush=True)
         if not health.get("total_vectors"):

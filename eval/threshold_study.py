@@ -115,7 +115,12 @@ def main() -> int:
     args = parser.parse_args()
 
     gold = load_gold(GOLD)
-    client = httpx.Client(timeout=120.0)
+    # One reused connection for the whole sweep — see the note in run_eval.py: a
+    # fresh accept per query is what kills uvicorn's accept loop on Windows.
+    client = httpx.Client(
+        timeout=600.0,
+        limits=httpx.Limits(max_keepalive_connections=2, keepalive_expiry=900.0),
+    )
 
     reranked: bool | None = None
     per_query = []
