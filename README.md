@@ -137,6 +137,29 @@ therefore detects a missing API and starts one in-process — this is why `front
 `uvicorn` and `api.main`. `API_BASE_URL` stays overridable via the `VANIVERSE_API_URL` environment
 variable or a Streamlit secret, so pointing at a remote API later needs no code change.
 
+### Streamlit Cloud secrets
+
+The UI copies flat string secrets into the environment *before* the embedded API is
+imported, because `core/config.py` reads its configuration at import time — that is why
+the bridge sits at the top of `frontend/app.py`. Paste this into
+**App → Settings → Secrets**:
+
+```toml
+GROQ_API_KEY = "gsk_..."   # required: the only provider reachable with no local server
+LLM_PROVIDER = "groq"      # optional: see below
+```
+
+`GROQ_API_KEY` is the one that matters. `LLM_PROVIDER` is belt-and-braces: `/health`
+reports `ollama_reachable`, and the sidebar drops Ollama from the provider list when
+nothing answers on `OLLAMA_BASE_URL`, so the default falls through to Groq on its own.
+`GROQ_MODEL` overrides the model id, whose default is listed under
+[Configuration](#configuration) and which Groq retires on its own schedule — a retired id
+returns `404 model_not_found`, which the API now reports verbatim rather than as a bare
+"call failed".
+
+Secrets are never committed: `GROQ_API_KEY` is read from the environment only, and
+`.env.example` ships an empty placeholder.
+
 ---
 
 ## Ingestion pipeline

@@ -2,7 +2,7 @@ import io
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF (the `fitz` name is a deprecated alias)
 from PIL import Image
 
 from core import config

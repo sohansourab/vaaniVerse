@@ -5,7 +5,7 @@ so these tests pass on a machine with no Tesseract and no easyocr installed.
 """
 from __future__ import annotations
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF (the `fitz` name is a deprecated alias)
 import pytest
 from PIL import Image
 
