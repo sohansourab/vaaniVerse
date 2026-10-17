@@ -13,3 +13,9 @@ data/
 # which must never be committed. eval/gold_qa.jsonl (our own questions) IS tracked.
 eval/results.json
 eval/results.jsonl
+
+# Partially-downloaded files (browser .crdownload / temp) — datasets and models
+# are large and must never be committed.
+*.crdownload
+*.part
+*.tmp
