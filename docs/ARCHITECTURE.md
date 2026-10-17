@@ -285,28 +285,41 @@ Evaluation must be stratified by language and source type to reflect real deploy
 
 ## 12. Recommended roadmap
 
-The project should evolve in stages:
+The project should evolve in stages. **The authoritative version — with tasks, exit criteria and live
+status — is [ROADMAP.md](ROADMAP.md)**; this is a summary of that same six-milestone sequence.
 
-### Phase 1: Foundation
+### Milestone 1: Foundation & stability — ✅ complete
 
 - stabilize the RAG pipeline
 - improve script detection and transliteration
 - validate retrieval quality on Telugu and English queries
 - add evaluation harness
 
-### Phase 2: Robustness
+### Milestone 2: Retrieval quality & evaluation — ✅ complete
+
+- benchmark datasets for Telugu and Romanized Telugu queries
+- retrieval metrics (recall@k, MRR) and a source-grounded refusals study
+- per-language reporting so the weakest path is visible
+
+### Milestone 3: Robustness & document handling — 🔄 in progress
 
 - improve OCR and PDF parsing
 - strengthen chunking for long-form heritage documents
 - refine citation behavior and answer grounding
+- add document provenance metadata
 
-### Phase 3: Cultural intelligence
+### Milestone 4: Cultural intelligence — planned
+
+- inscription and historical-document understanding
+- heritage knowledge graph
+- community contribution workflows
+
+### Milestone 5: Indic expansion — planned
 
 - support more Indian languages
-- add document provenance metadata
-- integrate domain-specific evaluation datasets
+- add domain-specific evaluation datasets
 
-### Phase 4: Multimodal and production scale
+### Milestone 6: Production readiness — planned
 
 - extend support for scanned manuscripts and images
 - add more robust indexing and observability

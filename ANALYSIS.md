@@ -305,7 +305,7 @@ python -m venv .venv
 - **No `LICENSE` file** even though the README states "Released under the MIT License." **[VERIFIED]**
 - **Health endpoint is shallow** — no readiness vs liveness split, no dependency checks (LLM key, model warm, index state are only partially reflected). **[VERIFIED]**
 - **Logging** is bare `logging.basicConfig(level=INFO)`: no structured/JSON logs, no request IDs, no access-log customization, no rotation, no log levels via env. **[VERIFIED]**
-- **No metrics/tracing/observability** (no OpenTelemetry, Prometheus, or health dashboards), despite `docs/ROADMAP.md` Milestone 5 calling for it. **[VERIFIED]**
+- **No metrics/tracing/observability** (no OpenTelemetry, Prometheus, or health dashboards), despite `docs/ROADMAP.md` Milestone 6 calling for it. **[VERIFIED]**
 - **No auth, no rate limiting, permissive CORS** (see §8). **[VERIFIED]**
 - **Startup hard-depends on an LLM backend** — a container without a Groq key or Ollama will crash-loop (observed). **[VERIFIED]**
 - **Frontend API URL is hardcoded** to `http://localhost:8000` (not env-configurable). **[VERIFIED]**

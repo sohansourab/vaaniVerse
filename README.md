@@ -52,9 +52,11 @@ those as first-class problems.
 > upload a Telugu PDF in the sidebar and click **Ingest document** to build the index before asking.
 > The first ingest downloads BGE-M3 (~2.2 GB) and embeds on CPU, so give it a few minutes.
 
-> **Status:** Phase 1 complete — the end-to-end pipeline runs, the API and UI are live, and the
-> provider switch (Ollama ⇆ Groq) is implemented and tested. OCR and multi-language expansion are
-> roadmap items, not shipped features. See [Known limitations](#known-limitations).
+> **Status:** Phases 1–2 complete — the end-to-end pipeline runs, the API and UI are live, the
+> provider switch (Ollama ⇆ Groq) is implemented and tested, and retrieval is measured at
+> **83% recall@5** ([docs/EVALUATION.md](docs/EVALUATION.md)). Phase 3 (robustness: transliteration,
+> reranking, OCR) is in progress. OCR and multi-language expansion are roadmap items, not shipped
+> features. See [Known limitations](#known-limitations).
 
 ---
 
@@ -558,11 +560,14 @@ These are real and worth knowing before you rely on the system:
 | Phase | Focus | State |
 | --- | --- | --- |
 | **1 · Foundation** | Multilingual RAG pipeline, FastAPI, Streamlit, FAISS, provider switch, tests | ✅ Complete |
-| **2 · Robustness** | OCR, stronger transliteration, richer PDF layout handling, better token estimation | Planned |
-| **3 · Cultural intelligence** | Inscription understanding, historical documents, heritage knowledge graph, community workflows | Planned |
-| **4 · Indic expansion** | Hindi, Tamil, Kannada, Sanskrit, cross-language retrieval | Planned |
+| **2 · Evaluation** | 40-question gold set, recall@k, MRR, per-language and threshold analysis | ✅ Complete |
+| **3 · Robustness** | Transliteration, reranking, richer PDF layout handling, token estimation, OCR, provenance | 🔄 In progress |
+| **4 · Cultural intelligence** | Inscription understanding, historical documents, heritage knowledge graph, community workflows | Planned |
+| **5 · Indic expansion** | Hindi, Tamil, Kannada, Sanskrit, cross-language retrieval | Planned |
+| **6 · Production readiness** | Telemetry, health checks, rate limits, admin tooling, deployment | Planned |
 
-Detailed milestones with tasks and exit criteria live in [docs/ROADMAP.md](docs/ROADMAP.md).
+[docs/ROADMAP.md](docs/ROADMAP.md) is the source of truth — detailed tasks, exit criteria and status
+for each milestone live there, and this table is its summary.
 
 ---
 
