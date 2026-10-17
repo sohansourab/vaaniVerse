@@ -15,7 +15,7 @@
 <br/>
 
 [![Live demo](https://img.shields.io/badge/Streamlit%20Cloud-live-brightgreen?logo=streamlit&logoColor=white)](https://vaaniverse-27.streamlit.app/)
-[![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-blue?logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.66-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io)
 [![Embeddings](https://img.shields.io/badge/Embeddings-BGE--M3-orange)](https://huggingface.co/BAAI/bge-m3)
@@ -389,7 +389,8 @@ Built-in art-direction (dark "ink & turmeric" theme) lives in `.streamlit/config
 
 ## Quickstart
 
-**Prerequisites:** Python 3.12, and either [Ollama](https://ollama.com) (local, default) or a
+**Prerequisites:** Python 3.12 or newer (developed and tested on 3.14), and either
+[Ollama](https://ollama.com) (local, default) or a
 [Groq API key](https://console.groq.com) (hosted).
 
 ```bash
