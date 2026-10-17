@@ -654,7 +654,7 @@ for each milestone live there, and this table is its summary.
 | [docs/EVALUATION.md](docs/EVALUATION.md) | Measured retrieval / grounding / latency results, methodology, and threats to validity |
 | [docs/OCR.md](docs/OCR.md) | OCR for scanned pages: verified engine support, datasets, measured CER/WER, limitations |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestone-based plan with engineering priorities and exit criteria |
-| [DEPLOY.md](DEPLOY.md) | Container and hosted deployment |
+| [DEPLOY.md](DEPLOY.md) | Streamlit Cloud deployment, secrets, provider behaviour, troubleshooting |
 | [VERIFY.md](VERIFY.md) | Verified local run: commands and observed output |
 | [ANALYSIS.md](ANALYSIS.md) | Repository analysis and endpoint verification |
 
