@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main, v2]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is the documented minimum; 3.13 is current. The project is
+        # developed on 3.14 locally, which is not yet a stable runner image.
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # CPU-only torch keeps the install small; nothing in the test suite
+          # touches CUDA.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest -q
+
+  retrieval-eval:
+    name: offline retrieval eval
+    runs-on: ubuntu-latest
+    # The eval needs the embedding model and an ingested index, neither of which
+    # is in the repository. It runs only where a model cache and index exist,
+    # i.e. on a self-hosted runner or after the steps below are supplied.
+    # Kept in the workflow so the command is not folklore; skipped by default.
+    if: vars.RUN_RETRIEVAL_EVAL == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Cache Hugging Face models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-bge-m3
+
+      - name: Retrieve
+        env:
+          PYTHONUTF8: "1"
+        run: python eval/run_eval.py --offline --out eval/results.json
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-eval
+          path: eval/results.json

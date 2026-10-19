@@ -201,6 +201,18 @@ html, body, [class*="css"] {
     white-space: nowrap;
 }
 
+/* The cited passage itself: the reader must be able to check the claim. */
+.vv-passage {
+    font-family: 'Tiro Telugu', 'Work Sans', serif;
+    font-size: 0.84rem;
+    line-height: 1.65;
+    color: var(--parchment-dim);
+    border-left: 2px solid var(--hairline);
+    padding: 2px 0 2px 12px;
+    margin: 0 0 10px 2px;
+    white-space: pre-wrap;
+}
+
 /* ── Inputs & controls ──────────────────────────────────────────────────── */
 .stButton button {
     background: transparent;
@@ -326,40 +338,124 @@ def script_badge(script: str) -> str:
     return f'<span class="vv-chip" style="color:{color};">{script}</span>'
 
 
-def render_sources(sources: list[dict]) -> None:
+def render_sources(sources: list[dict], *, key: str = "") -> None:
+    """
+    Cited passages, not just filenames.
+
+    A citation the reader cannot check is not a citation. Each entry shows the
+    source, page and score, plus the passage the model was given, collapsed by
+    default so a long answer stays readable.
+    """
     if not sources:
         return
     with st.expander(f"Sources cited — {len(sources)}", expanded=False):
-        rows = ""
         for i, s in enumerate(sources, 1):
             score = s.get("score", 0)
             color = score_color(score)
-            rows += f"""
-<div class="vv-footnote">
-    <span class="vv-footnote-ref">
-        <b>[{i}]</b> &nbsp;{s.get('source', 'unknown')} · p.{s.get('page_number', '?')}
-        &nbsp;&nbsp;{script_badge(s.get('script', '?'))}
-    </span>
-    <span class="vv-footnote-score" style="color:{color};">{score:.4f}</span>
-</div>"""
-        st.markdown(f'<div class="vv-footnotes">{rows}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="vv-footnote">'
+                f'<span class="vv-footnote-ref">'
+                f'<b>[{i}]</b> &nbsp;{s.get("source", "unknown")} · '
+                f'p.{s.get("page_number", "?")}'
+                f'&nbsp;&nbsp;{script_badge(s.get("script", "?"))}'
+                f'</span>'
+                f'<span class="vv-footnote-score" style="color:{color};">'
+                f'{score:.4f}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            text = (s.get("text") or "").strip()
+            if text:
+                excerpt = text if len(text) <= 700 else text[:700] + "…"
+                st.markdown(
+                    f'<div class="vv-passage">{excerpt}</div>',
+                    unsafe_allow_html=True,
+                )
+
+
+def render_verification(verification: dict | None) -> None:
+    """Surface the claim↔citation check without turning it into a verdict."""
+    if not verification:
+        return
+    if verification.get("passed"):
+        st.markdown(
+            '<p class="vv-meta" style="color:var(--banyan);">'
+            '✓ every citation points at a supplied source</p>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    problems = []
+    invalid = verification.get("invalid_citations") or []
+    if invalid:
+        problems.append(
+            "cited " + ", ".join(f"[SOURCE {n}]" for n in invalid)
+            + " but those sources were not provided"
+        )
+    unsupported = verification.get("unsupported_claims") or 0
+    if unsupported:
+        problems.append(f"{unsupported} claim(s) did not overlap the passage they cited")
+    st.warning(
+        "**Citation check flagged this answer.** " + "; ".join(problems) + ".",
+        icon="⚠️",
+    )
+
+
+def render_feedback(entry: dict, key: str) -> None:
+    """Two buttons that append a verdict to the server's feedback log."""
+    state_key = f"fb_{key}"
+    if st.session_state.get(state_key):
+        st.markdown(
+            f'<p class="vv-meta">Thanks — recorded as '
+            f'<b>{st.session_state[state_key]}</b>.</p>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    left, right, _ = st.columns([1, 1, 8])
+    verdict = None
+    if left.button("👍", key=f"up_{key}", help="This answer was useful"):
+        verdict = "up"
+    if right.button("👎", key=f"down_{key}", help="This answer was wrong or unsupported"):
+        verdict = "down"
+    if verdict:
+        payload = {
+            "verdict":  verdict,
+            "query":    entry.get("query", ""),
+            "answer":   entry.get("content", ""),
+            "provider": entry.get("meta", {}).get("provider"),
+            "model":    entry.get("meta", {}).get("model"),
+            "sources":  entry.get("sources", []),
+        }
+        try:
+            requests.post(f"{API_BASE_URL}/feedback", json=payload, timeout=15)
+        except requests.exceptions.RequestException:
+            pass  # feedback is best-effort; never block the reading room on it
+        st.session_state[state_key] = verdict
+        st.rerun()
 
 
 def query_api(
     query: str,
     top_k: int,
-    score_threshold: float,
+    score_threshold: float | None,
     filter_source: str | None,
     provider: str,
+    history: list[dict] | None = None,
 ) -> dict | None:
     payload = {
-        "query":           query,
-        "top_k":           top_k,
-        "score_threshold": score_threshold,
-        "provider":        provider,
+        "query":    query,
+        "top_k":    top_k,
+        "provider": provider,
     }
+    # None means "use the server's calibrated per-script default", which is what
+    # the UI offers when the threshold box is left alone.
+    if score_threshold is not None:
+        payload["score_threshold"] = score_threshold
     if filter_source:
         payload["filter_source"] = filter_source
+    if history:
+        payload["history"] = history[-8:]
     try:
         resp = requests.post(
             f"{API_BASE_URL}/query",
@@ -378,6 +474,17 @@ def ingest_file(file) -> dict | None:
         return resp.json()
     except requests.exceptions.ConnectionError:
         return None
+
+
+def fetch_sources() -> list[str]:
+    """Source filenames currently in the index, for the sidebar filter."""
+    try:
+        resp = requests.get(f"{API_BASE_URL}/index/sources", timeout=15)
+        if resp.ok:
+            return resp.json().get("sources", [])
+    except requests.exceptions.RequestException:
+        pass
+    return []
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
@@ -435,18 +542,37 @@ with st.sidebar:
 
     if st.button("Ingest document", use_container_width=True, disabled=uploaded is None):
         ensure_api_ready()
+        # Ingest is one blocking request (parse → chunk → embed → persist), so a
+        # real progress bar is not available without server streaming. Say what
+        # is happening and why it is slow instead of leaving a bare spinner.
+        progress = st.progress(0.0, text="Uploading…")
         with st.spinner("Parsing → chunking → embedding…"):
+            progress.progress(0.15, text="Parsing pages…")
             result = ingest_file(uploaded)
+            progress.progress(0.95, text="Saving index…")
             if result and "total_chunks" in result:
+                progress.progress(1.0, text="Done")
+                replaced = result.get("replaced_chunks", 0)
+                note = f" (replaced {replaced} old chunks)" if replaced else ""
                 st.success(
                     f"{result['source']} — {result['total_pages']} pages → "
-                    f"{result['total_chunks']} chunks → {result['total_vectors']} vectors"
+                    f"{result['total_chunks']} chunks → {result['total_vectors']} vectors{note}"
                 )
                 st.rerun()
             elif result:
+                progress.empty()
                 st.error(f"Ingestion failed: {result.get('detail', result)}")
             else:
+                progress.empty()
                 st.error("Cannot reach the API.")
+
+    if health and health.get("total_vectors", 0) == 0:
+        st.markdown(
+            '<p class="vv-hint">The index is empty. Upload a PDF above to build '
+            'it — the first ingest also downloads BGE-M3 (~2.2 GB) and embeds on '
+            'CPU, so give it a few minutes.</p>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown('<div class="vv-divider">॥</div>', unsafe_allow_html=True)
 
@@ -461,20 +587,44 @@ with st.sidebar:
         help      = "Number of source chunks to retrieve per query.",
     )
 
-    score_threshold = st.slider(
+    # The server applies a calibrated cutoff per script (0.41 Telugu / 0.46 Roman
+    # and English). Overriding it here is possible, but the default is the
+    # measured value, so "automatic" is the first-class choice rather than an
+    # invisible constant.
+    threshold_mode = st.radio(
         "Score threshold",
-        min_value = 0.0,
-        max_value = 1.0,
-        value     = 0.45,
-        step      = 0.05,
-        help      = "Minimum cosine similarity. Lower = more results, less precise.",
+        options = ["Automatic (per script)", "Manual"],
+        index   = 0,
+        help    = "Automatic uses the calibrated cutoff for the query's script "
+                  "(0.41 Telugu, 0.46 Roman/English). Manual pins one value.",
     )
+    score_threshold = None
+    if threshold_mode == "Manual":
+        score_threshold = st.slider(
+            "Manual threshold",
+            min_value = 0.0,
+            max_value = 1.0,
+            value     = 0.45,
+            step      = 0.01,
+            help      = "Minimum similarity for the score that ranks results. "
+                        "Lower = more results, less precise.",
+        )
 
-    filter_source = st.text_input(
-        "Filter by source",
-        placeholder = "e.g. ramayanam.pdf",
-        help        = "Restrict retrieval to a specific document.",
-    )
+    indexed_sources = fetch_sources() if api_ready else []
+    if indexed_sources:
+        filter_source = st.selectbox(
+            "Filter by source",
+            options = ["All sources"] + indexed_sources,
+            index   = 0,
+            help    = "Restrict retrieval to a specific document.",
+        )
+        filter_source = "" if filter_source == "All sources" else filter_source
+    else:
+        filter_source = st.text_input(
+            "Filter by source",
+            placeholder = "e.g. ramayanam.pdf",
+            help        = "Restrict retrieval to a specific document.",
+        )
 
     # Only offer providers this server can actually serve. Where there is no
     # local Ollama — Streamlit Community Cloud, for example — listing it just
@@ -536,8 +686,29 @@ st.markdown(
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Starter questions. A first-time visitor gets an empty reading room and an empty
+# input box; these are drawn from the gold set so they are known to be answerable
+# from the sample book, and they cover all three query modes.
+_SAMPLE_QUESTIONS = [
+    "నేను ఎవరు?",
+    "eruka ante emiti?",
+    "What is awareness?",
+]
+
+if not st.session_state.messages:
+    st.markdown(
+        '<p class="vv-hint">Nothing asked yet. Try one of these, or write your '
+        'own below.</p>',
+        unsafe_allow_html=True,
+    )
+    _cols = st.columns(len(_SAMPLE_QUESTIONS))
+    for _col, _question in zip(_cols, _SAMPLE_QUESTIONS):
+        if _col.button(_question, key=f"starter_{_question}", use_container_width=True):
+            st.session_state.pending_prompt = _question
+            st.rerun()
+
 # Render existing chat history
-for msg in st.session_state.messages:
+for _idx, msg in enumerate(st.session_state.messages):
     avatar = "🛕" if msg["role"] == "assistant" else None
     with st.chat_message(msg["role"], avatar=avatar):
         st.markdown(msg["content"])
@@ -552,12 +723,16 @@ for msg in st.session_state.messages:
                     f'</p>',
                     unsafe_allow_html=True,
                 )
+            render_verification(msg.get("verification"))
             render_sources(msg.get("sources", []))
+            render_feedback(msg, key=f"msg{_idx}")
 
-# Chat input
-if prompt := st.chat_input(
+# Chat input — a starter button can also seed the prompt.
+prompt = st.chat_input(
     "అర్జునుడికి విషాదం ఎందుకు కలిగింది? / Who is Rama? / What is dharma?"
-):
+) or st.session_state.pop("pending_prompt", None)
+
+if prompt:
     # Show user message
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -566,6 +741,15 @@ if prompt := st.chat_input(
     # Query API and show response
     with st.chat_message("assistant", avatar="🛕"):
         ensure_api_ready()
+
+        # Prior turns let a follow-up ("and what did that mean?") resolve. The
+        # server treats them as chat context only, never as citable sources.
+        history = [
+            {"role": m["role"], "content": m["content"]}
+            for m in st.session_state.messages[:-1]
+            if m["role"] in ("user", "assistant")
+        ]
+
         with st.spinner("Retrieving context and reasoning…"):
             data = query_api(
                 query           = prompt,
@@ -573,6 +757,7 @@ if prompt := st.chat_input(
                 score_threshold = score_threshold,
                 filter_source   = filter_source.strip() or None,
                 provider        = provider_choice,
+                history         = history,
             )
 
         if data is None:
@@ -598,32 +783,44 @@ if prompt := st.chat_input(
         model   = data.get("model", "?")
         provider_used = data.get("provider", provider_choice)
         chunks  = data.get("total_chunks_retrieved", 0)
+        threshold_used = data.get("score_threshold_used")
+        verification   = data.get("verification")
 
         # Render answer
         st.markdown(answer)
 
         # Metadata row
+        threshold_note = (
+            f'&nbsp;&nbsp;cutoff {threshold_used:.2f}'
+            if isinstance(threshold_used, (int, float)) else ""
+        )
         st.markdown(
             f'<p class="vv-meta">'
             f'{script_badge(script)}&nbsp;&nbsp;'
             f'{provider_used}&nbsp;/&nbsp;<b>{model}</b>&nbsp;&nbsp;'
-            f'{chunks} chunks retrieved'
+            f'{chunks} chunks retrieved{threshold_note}'
             f'</p>',
             unsafe_allow_html=True,
         )
 
-        # Source citations
+        render_verification(verification)
+
+        # Source citations, with the cited passages
         render_sources(sources)
 
         # Save to session
-        st.session_state.messages.append({
+        entry = {
             "role":    "assistant",
             "content": answer,
             "sources": sources,
+            "verification": verification,
             "meta":    {
                 "query_script":          script,
                 "provider":              provider_used,
                 "model":                 model,
                 "total_chunks_retrieved": chunks,
+                "score_threshold_used":  threshold_used,
             },
-        })
+        }
+        st.session_state.messages.append(entry)
+        render_feedback(entry, key=f"msg{len(st.session_state.messages) - 1}")

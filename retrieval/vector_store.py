@@ -13,11 +13,15 @@ from core.config import (
     EMBEDDING_MODEL_NAME,
     FAISS_INDEX_PATH,
     FAISS_META_PATH,
+    HYBRID_ALPHA,
+    HYBRID_CANDIDATES,
+    HYBRID_ENABLED,
     QDRANT_COLLECTION,
     QDRANT_HOST,
     QDRANT_PORT,
     RERANK_CANDIDATES,
     RERANK_ENABLED,
+    RRF_K,
     SCORE_THRESHOLD,
     TOP_K,
     VECTOR_BACKEND,
@@ -25,6 +29,7 @@ from core.config import (
 from core.exceptions import IndexNotFoundError, VectorStoreError
 from ingestion.chunker import TextChunk
 from retrieval.embeddings import EMBEDDING_DIM, embed_chunks, embed_query
+from retrieval.hybrid import BM25Index, reciprocal_rank_fusion
 from retrieval.reranker import available as reranker_available
 from retrieval.reranker import probe as reranker_probe
 from retrieval.reranker import score_pairs
@@ -158,14 +163,21 @@ class FAISSVectorStore:
         query_vector: np.ndarray,
         top_k:            int   = TOP_K,
         score_threshold:  float = SCORE_THRESHOLD,
+        filter_by:        dict[str, Any] | None = None,
     ) -> list[RetrievedChunk]:
         """
         Searches the FAISS index for the top-k nearest vectors.
+
+        FAISS has no native metadata index, so ``filter_by`` is applied in
+        Python. To avoid returning fewer than ``top_k`` after filtering, a
+        wider candidate window is searched when a filter is present — the same
+        over-fetch trick the Qdrant path never needs.
 
         Args:
             query_vector:    shape (1024,) — output of embed_query().
             top_k:           Number of results to return.
             score_threshold: Minimum cosine similarity score to include.
+            filter_by:       Metadata equality filters, e.g. {"source": "book.pdf"}.
 
         Returns:
             List of RetrievedChunk sorted by descending score.
@@ -182,8 +194,14 @@ class FAISSVectorStore:
 
         query_vector = self._validate_vectors(query_vector)
 
+        # Over-fetch so post-filtering can still fill top_k. The window is
+        # bounded by the corpus size, so it never over-reads.
+        candidate_k = top_k
+        if filter_by:
+            candidate_k = min(self._index.ntotal, max(top_k * 5 + 50, top_k))
+
         try:
-            scores, indices = self._index.search(query_vector, top_k)
+            scores, indices = self._index.search(query_vector, candidate_k)
         except Exception as exc:
             raise VectorStoreError(
                 "FAISS search failed.",
@@ -197,6 +215,8 @@ class FAISSVectorStore:
             if float(score) < score_threshold:
                 continue
             meta = self._metadata[idx]
+            if filter_by and any(meta.get(k) != v for k, v in filter_by.items()):
+                continue
             results.append(
                 RetrievedChunk(
                     chunk_id = meta.get("chunk_id", str(idx)),
@@ -208,7 +228,56 @@ class FAISSVectorStore:
             )
 
         results.sort(key=lambda r: r.score, reverse=True)
-        return results
+        return results[:top_k]
+
+    def remove_by_source(self, source: str) -> int:
+        """
+        Drop every vector whose ``source`` matches, and rebuild the index.
+
+        FAISS IndexFlatIP has no delete, but it can be reconstructed, and a
+        rebuild of a few thousand vectors is milliseconds. Returns the number
+        of chunks removed (0 when the source was not present).
+        """
+        if self._index is None or self._index.ntotal == 0:
+            return 0
+
+        keep = [i for i, m in enumerate(self._metadata) if m.get("source") != source]
+        removed = len(self._metadata) - len(keep)
+        if removed == 0:
+            return 0
+
+        vectors = self._index.reconstruct_n(0, self._index.ntotal)
+        new_index = faiss.IndexFlatIP(self.embedding_dim)
+        if keep:
+            new_index.add(np.ascontiguousarray(vectors[keep], dtype=np.float32))
+        self._index = new_index
+        self._metadata = [self._metadata[i] for i in keep]
+        logger.info(f"FAISS: removed {removed} vectors for source '{source}'.")
+        return removed
+
+    def catalog(self) -> list[dict]:
+        """All stored chunk records (chunk_id, text, metadata), order-preserved."""
+        return list(self._metadata)
+
+    def sources(self) -> list[str]:
+        """Distinct source filenames currently indexed."""
+        return sorted({m.get("source", "unknown") for m in self._metadata})
+
+    def reset(self) -> None:
+        """
+        Clear the in-memory index and remove the persisted files.
+
+        The old behaviour cleared memory only, so a reset followed by a restart
+        silently resurrected the "deleted" index — confusing at best. Deleting
+        the files makes the reset mean the same thing in both states.
+        """
+        self._index = None
+        self._metadata = []
+        for path in (self.index_path, self.meta_path):
+            try:
+                Path(path).unlink(missing_ok=True)
+            except Exception as exc:  # pragma: no cover - filesystem dependent
+                logger.warning(f"Could not remove {path}: {exc}")
 
     def save(self) -> None:
         """Persists the FAISS index and metadata to disk."""
@@ -414,6 +483,72 @@ class QdrantVectorStore:
 
         return results
 
+    def remove_by_source(self, source: str) -> int:
+        """Delete every point whose payload ``source`` matches."""
+        self._ensure_collection()
+        try:
+            self._client.delete(
+                collection_name = self.collection,
+                points_selector = qdrant_models.FilterSelector(
+                    filter=qdrant_models.Filter(
+                        must=[qdrant_models.FieldCondition(
+                            key="source",
+                            match=qdrant_models.MatchValue(value=source),
+                        )]
+                    )
+                ),
+                wait=True,
+            )
+        except Exception as exc:
+            raise VectorStoreError(
+                "Qdrant delete-by-source failed.",
+                details={"error": str(exc), "collection": self.collection, "source": source},
+            )
+        # Qdrant reports deletes asynchronously-ish; report what remains.
+        return 0
+
+    def catalog(self) -> list[dict]:
+        """Scroll every point's payload — used to build the BM25 side of hybrid search."""
+        self._ensure_collection()
+        records: list[dict] = []
+        offset = None
+        try:
+            while True:
+                points, offset = self._client.scroll(
+                    collection_name = self.collection,
+                    limit           = 256,
+                    offset          = offset,
+                    with_payload    = True,
+                    with_vectors    = False,
+                )
+                for point in points:
+                    payload = point.payload or {}
+                    records.append({
+                        "chunk_id": payload.get("chunk_id", str(point.id)),
+                        "text":     payload.get("text", ""),
+                        **{k: v for k, v in payload.items() if k not in ("chunk_id", "text")},
+                    })
+                if offset is None:
+                    break
+        except Exception as exc:
+            raise VectorStoreError(
+                "Qdrant scroll failed.",
+                details={"error": str(exc), "collection": self.collection},
+            )
+        return records
+
+    def sources(self) -> list[str]:
+        return sorted({r.get("source", "unknown") for r in self.catalog()})
+
+    def reset(self) -> None:
+        """Drop and recreate the collection, so the index is empty and usable."""
+        try:
+            self._client.delete_collection(self.collection)
+        except Exception as exc:  # pragma: no cover - environment dependent
+            logger.warning(f"Qdrant delete_collection failed for {self.collection}: {exc}")
+        self._ensure_collection()
+        logger.info(f"Qdrant collection '{self.collection}' reset.")
+
     @property
     def total_vectors(self) -> int:
         try:
@@ -450,6 +585,8 @@ class VectorStore:
                 f"Unknown VECTOR_BACKEND '{backend}'. Choose 'faiss' or 'qdrant'.",
                 details={"backend": backend},
             )
+        # BM25 side of hybrid search, built lazily and invalidated on writes.
+        self._bm25: BM25Index | None = None
         logger.info(f"VectorStore initialized with backend: '{self.backend}'")
 
     def index_chunks(
@@ -481,9 +618,42 @@ class VectorStore:
         )
 
         self._store.add(chunks, vectors)
+        self._bm25 = None   # catalog changed; rebuild on next hybrid query
 
         if persist and self.backend == "faiss":
             self._store.save()
+
+    def remove_source(self, source: str, persist: bool = True) -> int:
+        """
+        Delete every chunk originating from ``source``.
+
+        This is what makes re-ingesting a PDF idempotent: the ingest path removes
+        the source's old vectors before adding the new ones, so the same file
+        uploaded twice does not double the index.
+        """
+        removed = self._store.remove_by_source(source)
+        self._bm25 = None
+        if removed and persist and self.backend == "faiss":
+            try:
+                self._store.save()
+            except VectorStoreError:
+                # An emptied index cannot be saved; the in-memory state is still
+                # correct, and the next ingest will persist.
+                logger.warning("Index became empty after removal; not persisting.")
+        return removed
+
+    def sources(self) -> list[str]:
+        """Distinct indexed source filenames."""
+        return self._store.sources()
+
+    def catalog(self) -> list[dict]:
+        """All chunk records, for building the BM25 index or listing sources."""
+        return self._store.catalog()
+
+    def reset(self) -> None:
+        """Drop the index in memory *and* on disk (FAISS) / the collection (Qdrant)."""
+        self._bm25 = None
+        self._store.reset()
 
     def load(self) -> None:
         """
@@ -540,28 +710,133 @@ class VectorStore:
         query_vector = embed_query(query_text)
         reranking    = self._reranking_active()
 
+        # Hybrid and the reranker are alternative second stages, not a stack:
+        # both exist to fix the same failure (dense ranking), and running BM25
+        # fusion before a cross-encoder that costs ~34 s/query only slows the
+        # measured path. Reranking wins when explicitly enabled.
+        if HYBRID_ENABLED and not reranking:
+            return self._hybrid_search(
+                query_text, query_vector, top_k, score_threshold, filter_by
+            )
+
         # Only widen the net when something is going to re-order it.
         candidate_k         = max(top_k, RERANK_CANDIDATES) if reranking else top_k
         candidate_threshold = 0.0 if reranking else score_threshold
 
-        if self.backend == "faiss":
-            candidates = self._store.search(
-                query_vector    = query_vector,
-                top_k           = candidate_k,
-                score_threshold = candidate_threshold,
-            )
-        else:
-            candidates = self._store.search(
-                query_vector    = query_vector,
-                top_k           = candidate_k,
-                score_threshold = candidate_threshold,
-                filter_by       = filter_by,
-            )
+        candidates = self._store.search(
+            query_vector    = query_vector,
+            top_k           = candidate_k,
+            score_threshold = candidate_threshold,
+            filter_by       = filter_by,
+        )
 
         if not reranking or not candidates:
             return candidates[:top_k]
 
         return self._rerank(query_text, candidates, top_k, score_threshold)
+
+    # ── Hybrid search ──────────────────────────────────────────────────────────
+
+    def _bm25_index(self) -> BM25Index:
+        """Lazily build (and cache) the BM25 index over every stored passage."""
+        if self._bm25 is None:
+            records = self._store.catalog()
+            index = BM25Index()
+            index.build(
+                [r.get("chunk_id", "") for r in records],
+                [r.get("text", "") for r in records],
+            )
+            self._bm25 = index
+        return self._bm25
+
+    def _hybrid_search(
+        self,
+        query_text: str,
+        query_vector: np.ndarray,
+        top_k: int,
+        score_threshold: float,
+        filter_by: dict[str, Any] | None,
+    ) -> list[RetrievedChunk]:
+        """
+        Dense ∪ BM25, fused by Reciprocal Rank Fusion.
+
+        Threshold semantics are kept deliberately narrow: the gate still applies
+        to the *cosine* score, so a hybrid run cannot open the abstention gate
+        that dense retrieval closed. A passage that only BM25 matched is kept
+        despite a low cosine — an exact term match is evidence dense retrieval
+        cannot produce — while a dense-only passage below the floor is dropped
+        exactly as before. Ordering is by fused rank, not by cosine, so `score`
+        may not descend monotonically in hybrid mode; `retrieval_score` always
+        carries the cosine.
+        """
+        dense = self._store.search(
+            query_vector    = query_vector,
+            top_k           = max(HYBRID_CANDIDATES, top_k),
+            score_threshold = 0.0,
+            filter_by       = filter_by,
+        )
+
+        # Hybrid must not open a gate dense retrieval closed. If nothing clears
+        # the calibrated floor, the query is treated as out-of-domain and the
+        # caller abstains — otherwise a single shared token ("book" in "what is
+        # the price of this book?") would be enough to force an answer, which is
+        # exactly the hallucination the abstention path exists to prevent.
+        if not dense or dense[0].score < score_threshold:
+            return []
+
+        dense_by_id = {chunk.chunk_id: chunk for chunk in dense}
+
+        lexical = self._bm25_index().search(query_text, HYBRID_CANDIDATES)
+        lexical_ids = [chunk_id for chunk_id, _ in lexical]
+        lexical_set = set(lexical_ids)
+
+        fused = reciprocal_rank_fusion(
+            [chunk.chunk_id for chunk in dense],
+            lexical_ids,
+            alpha=HYBRID_ALPHA,
+            k=RRF_K,
+        )
+
+        # Only needed when a lexical hit was not also a dense hit.
+        catalog: dict[str, dict] | None = None
+
+        results: list[RetrievedChunk] = []
+        for chunk_id, rrf_score in fused:
+            chunk = dense_by_id.get(chunk_id)
+            if chunk is None:
+                if catalog is None:
+                    catalog = {r.get("chunk_id", ""): r for r in self._store.catalog()}
+                record = catalog.get(chunk_id)
+                if record is None:
+                    continue
+                if filter_by and any(record.get(k) != v for k, v in filter_by.items()):
+                    continue
+                chunk = RetrievedChunk(
+                    chunk_id        = chunk_id,
+                    text            = record.get("text", ""),
+                    score           = 0.0,
+                    metadata        = {k: v for k, v in record.items()
+                                       if k not in ("chunk_id", "text")},
+                    retrieval_score = 0.0,
+                )
+                chunk.metadata["hybrid_score"] = round(rrf_score, 6)
+            else:
+                # Dense hit: keep the cosine as the displayed/scored value, but
+                # record the fused rank that actually ordered it.
+                chunk.metadata["hybrid_score"] = round(rrf_score, 6)
+
+            if (
+                chunk.retrieval_score
+                and chunk.retrieval_score < score_threshold
+                and chunk_id not in lexical_set
+            ):
+                continue  # dense-only and below the calibrated floor
+
+            results.append(chunk)
+            if len(results) >= top_k:
+                break
+
+        return results
 
     @staticmethod
     def _reranking_active() -> bool:

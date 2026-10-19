@@ -38,3 +38,16 @@
 {"id": "o08", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain: software", "query": "How do I install FAISS with pip?"}
 {"id": "o09", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain: demographics", "query": "What is the population of Telangana?"}
 {"id": "o10", "language": "telugu",  "in_corpus": false, "expected_pages": [], "topic": "out-of-domain: geography in Telugu", "query": "భారతదేశ రాజధాని ఏమిటి?"}
+{"id": "t21", "language": "telugu",  "in_corpus": true,  "expected_pages": [1],        "topic": "purpose of self-inquiry (rephrase of t01)", "query": "ఆత్మ విచారణ ఎందుకు చేయాలి?"}
+{"id": "t22", "language": "telugu",  "in_corpus": true,  "expected_pages": [17],       "topic": "awareness has no boundaries (rephrase of t10)", "query": "ఎరుకకు హద్దులు ఉన్నాయా?"}
+{"id": "t23", "language": "telugu",  "in_corpus": true,  "expected_pages": [1, 6, 13], "topic": "not the body (rephrase of t04/e03)", "query": "నిజమైన నేను ఈ శరీరం కాదు అని ఎలా తెలుస్తుంది?"}
+{"id": "r06", "language": "roman",   "in_corpus": true,  "expected_pages": [1],        "topic": "who am I (rephrase of r01)", "query": "nenu evaru ani telusukovadam ela?"}
+{"id": "r07", "language": "roman",   "in_corpus": true,  "expected_pages": [15],       "topic": "what is awareness (rephrase of r02)", "query": "eruka ante emiti ani cheppandi?"}
+{"id": "e06", "language": "english", "in_corpus": true,  "expected_pages": [1],        "topic": "who am I (rephrase of e01)", "query": "Who am I, really?"}
+{"id": "e07", "language": "english", "in_corpus": true,  "expected_pages": [15],       "topic": "define awareness (rephrase of e02)", "query": "Define awareness in this teaching."}
+{"id": "o11", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain near-miss: book metadata (ISBN not stated)", "query": "What is the ISBN of this book?"}
+{"id": "o12", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain near-miss: book metadata (publisher not stated)", "query": "Who published this edition?"}
+{"id": "o13", "language": "telugu",  "in_corpus": false, "expected_pages": [], "topic": "out-of-domain near-miss: book metadata in Telugu (author not stated)", "query": "ఈ పుస్తకం రచయిత ఎవరు?"}
+{"id": "o14", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain near-miss: software", "query": "How do I install PyTorch on Windows?"}
+{"id": "o15", "language": "english", "in_corpus": false, "expected_pages": [], "topic": "out-of-domain near-miss: demographics", "query": "What is the population of Andhra Pradesh?"}
+{"id": "o16", "language": "telugu",  "in_corpus": false, "expected_pages": [], "topic": "out-of-domain near-miss: weather in Telugu", "query": "ఈ రోజు హైదరాబాద్ వాతావరణం ఎలా ఉంది?"}

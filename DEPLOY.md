@@ -85,6 +85,23 @@ already in memory — but they do not survive a restart.
 If you need a warm index without waiting, ingest once, then re-upload the same PDF
 and use the same container session; a sleeping app will need a fresh ingest.
 
+For a local clone, skip the upload entirely — this downloads a small public Telugu
+PDF, ingests it, and leaves a working index:
+
+```bash
+python -m scripts.load_sample            # download + ingest + persist
+python -m scripts.load_sample --dry-run  # parse/chunk only, no embedding
+```
+
+The PDF is intentionally **not** committed (third-party, and `data/` is
+gitignored), which is why a script does the fetching.
+
+> **Do not ingest the sample into an index you evaluate against.** The gold set in
+> `eval/gold_qa.jsonl` matches answers by **page number** only, and the sample is a
+> different book that also starts at page 1. Ingesting it silently makes "page 1"
+> ambiguous and inflates recall. Use a separate index (or `DELETE /index/reset`
+> first) before re-running `eval/run_eval.py`.
+
 ---
 
 ## 3. Environment variables
@@ -103,15 +120,41 @@ Set these as Streamlit secrets (Cloud) or in `.env` (local).
 | `VECTOR_BACKEND` | `faiss` | `faiss` (default, tested) or `qdrant`. |
 | `EMBEDDING_DEVICE` | `cpu` | **Cloud has no GPU — keep `cpu`.** |
 | `EMBEDDING_BATCH_SIZE` | `16` | Lower if memory-constrained. |
+| `SCORE_THRESHOLD_TELUGU` | `0.41` | Score floor for native-Telugu queries. Measured — see `docs/EVALUATION.md`. |
+| `SCORE_THRESHOLD_ROMAN` | `0.46` | Score floor for Romanized-Telugu and English queries. |
+| `SCORE_THRESHOLD_MIXED` | `0.45` | Score floor for mixed-script queries. |
+| `SCORE_THRESHOLD` | `0.45` | Fallback for an undetected script. |
+| `HYBRID_ENABLED` | `false` | BM25 + dense fusion (RRF). Off by default. |
 | `RERANK_ENABLED` | `false` | Cross-encoder reranking. Off by default — see below. |
 | `RERANK_DEVICE` | `cpu` | Pinned explicitly; the library claims every CUDA device otherwise. |
-| `RERANK_THRESHOLD` | `0.5` | Abstention threshold applied to rerank scores. |
-| `OCR_ENGINE` | `tesseract` | `tesseract` (default), `easyocr`, or `none`. |
-| `TESSDATA_PREFIX` | `data/tessdata` | Telugu/English tessdata shipped in-repo. |
+| `RERANK_THRESHOLD` | `0.5` | Abstention floor applied to rerank scores (only used when reranking). |
+| `OCR_ENABLED` | `true` | OCR only runs for pages whose text layer is empty or vestigial. |
+| `OCR_ENGINE` | `auto` | `auto`, `tesseract`, or `easyocr`. |
+| `OCR_LANG` | `te,en` | ISO 639-1 codes; mapped to engine-specific codes internally. |
+| `OCR_PREPROCESS` | `true` | Grayscale + autocontrast + Otsu before recognition (helps degraded scans). |
+| `OCR_PSM` | `6` | Tesseract page-segmentation mode; 6 = uniform block of text. |
+| `MAX_HISTORY_TURNS` | `4` | Conversation turns sent back to the model (client-supplied, stateless server). |
+| `CITATION_VERIFY_ENABLED` | `true` | Flag claims whose cited passage does not support them. |
+| `VANIVERSE_API_KEY` | *(secret)* | Enables `X-API-Key` auth on `/ingest`, `DELETE /index/reset`, `/admin/requests`. Unset ⇒ those routes are **open**. |
+| `REQUIRE_AUTH_FOR_ALL` | `false` | Also require the key on `/query` and `/search`. |
+| `RATE_LIMIT_ENABLED` | `true` | In-process rate limiting. |
+| `RATE_LIMIT_PER_MINUTE` | `60` | Per-client limit on `/query` and `/search`. |
+| `INGEST_LIMIT_PER_HOUR` | `10` | Per-client limit on `/ingest`. |
+| `MAX_UPLOAD_MB` | `50` | Reject larger uploads before reading them into memory. |
+| `API_RELOAD` | `false` | uvicorn's reloader doubles model memory. Opt in locally. |
 
 **Leave `RERANK_ENABLED` off on Cloud.** Reranking adds a second ~2.3 GB model
 next to BGE-M3, which does not fit comfortably in the Cloud memory budget, and it
-is CPU-only there. It is measured and available, not part of the hosted default.
+is CPU-only there. It has since been measured end-to-end: recall@5 moves
+`0.900 → 0.9333` (one extra question of 30) for **+64.2 s per query** on CPU. It
+is available and measured, not part of the hosted default — see
+`docs/EVALUATION.md`.
+
+> **Set `VANIVERSE_API_KEY` on any host that is reachable from outside.** Without
+> it, anyone who can reach the port can ingest documents into the index or drop
+> it entirely. Read-only routes stay open by default, so the public demo keeps
+> working with the key set. `/health` reports `auth_configured` so this can be
+> verified from outside.
 
 > The API is designed to **start even when a backend is unavailable**. Selecting
 > `groq` without `GROQ_API_KEY` returns `503` at request time; it never crashes
@@ -130,13 +173,23 @@ is CPU-only there. It is measured and available, not part of the hosted default.
   "llm_backend": "groq",
   "llm_default": "groq",
   "groq_configured": true,
-  "ollama_reachable": false
+  "ollama_reachable": false,
+  "auth_configured": true,
+  "hybrid_enabled": false,
+  "rerank_enabled": false,
+  "groq_model": "qwen/qwen3.8-27b",
+  "groq_model_available": true,
+  "sources": ["9.nenu-evarini.pdf"]
 }
 ```
 
 `total_vectors: 0` means no corpus is loaded yet — ingest one. `ollama_reachable`
 is a live probe, not a flag, so a client can avoid offering a provider this host
-cannot actually serve.
+cannot actually serve. `auth_configured` is `false` when no `VANIVERSE_API_KEY` is
+set, i.e. the destructive routes are open — check it before exposing a port.
+`groq_model_available` is `null` when the check cannot be made (no key, or the
+catalogue call failed), which must not be read as "unavailable". `sources` lists
+the distinct documents in the index; it backs the UI's source filter.
 
 ---
 
@@ -164,13 +217,20 @@ python -m venv .venv && .venv/Scripts/activate      # Windows
 pip install -r requirements.txt
 cp .env.example .env                                # then fill in as needed
 
-python -m scripts.ingest_documents                  # build data/vectors/
+python -m scripts.load_sample                       # public sample PDF → data/vectors/
 streamlit run frontend/app.py                       # UI + embedded API
 ```
 
+`scripts/ingest_documents.py` needs an explicit input:
+
+```bash
+python -m scripts.ingest_documents --input path/to/book.pdf
+python -m scripts.ingest_documents --input path/to/folder/ --dry-run
+```
+
 The UI boots the API itself, so a separate `uvicorn` process is optional. To work
-on the API alone, run `uvicorn api.main:app --reload --port 8000` and point the UI
-at it with `VANIVERSE_API_URL`.
+on the API alone, run `uvicorn api.main:app --port 8000` (add
+`API_RELOAD=true` for auto-reload) and point the UI at it with `VANIVERSE_API_URL`.
 
 With a local Ollama on a 4 GB card, use `OLLAMA_MODEL=qwen2.5:3b`; larger local
 models exceed 4 GB of VRAM.
@@ -210,3 +270,7 @@ them can be shipped by accident.
 | First ingest takes minutes | ~2.2 GB BGE-M3 download + CPU embedding | Expected, once per container session |
 | No OCR on a scanned PDF | Tesseract apt packages missing | Confirm `packages.txt` was picked up, then redeploy |
 | App restarts while answering | Cloud memory pressure | Keep `RERANK_ENABLED=false`; lower `EMBEDDING_BATCH_SIZE` |
+| `401` from `/ingest` or `DELETE /index/reset` | `VANIVERSE_API_KEY` is set and the request carried no/wrong `X-API-Key` | Send the header, or unset the variable to reopen the route |
+| `429` from `/query` or `/search` | Per-client rate limit | Raise `RATE_LIMIT_PER_MINUTE`, or set `RATE_LIMIT_ENABLED=false` locally |
+| `/query` refuses everything | Index empty or rebuilt with a different embedder | Re-ingest; thresholds are calibrated per embedder + corpus |
+| Answers cite an unexpected page | Sample corpus was added to an evaluated index | `DELETE /index/reset`, then re-ingest one document (§2) |

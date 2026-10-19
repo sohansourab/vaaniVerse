@@ -116,6 +116,7 @@ class OllamaProvider(LLMProvider):
         prompt:        str,
         *,
         system_prompt: str | None = None,
+        history:       list[dict] | None = None,
         temperature:   float | None = None,
         max_tokens:    int   = 1024,
         timeout:       int   = 120,   # local inference can be slow on CPU/small GPUs
@@ -130,6 +131,7 @@ class OllamaProvider(LLMProvider):
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
+        messages.extend(history or [])
         messages.append({"role": "user", "content": prompt})
 
         payload = {
@@ -223,6 +225,7 @@ class GroqProvider(LLMProvider):
         prompt:        str,
         *,
         system_prompt: str | None = None,
+        history:       list[dict] | None = None,
         **kwargs,
     ) -> str:
         """
@@ -237,6 +240,7 @@ class GroqProvider(LLMProvider):
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
+        messages.extend(history or [])
         messages.append({"role": "user", "content": prompt})
 
         try:
@@ -274,6 +278,51 @@ class GroqProvider(LLMProvider):
         return answer.strip()
 
 
+# ── Groq model discovery ───────────────────────────────────────────────────────
+
+def list_groq_models(api_key: str = GROQ_API_KEY) -> list[str]:
+    """
+    Return the model ids the current Groq key can see.
+
+    Groq retires model ids on its own schedule, and a retired id fails with a
+    404 the operator only discovers on the first query. Exposing the live list
+    lets ``/health`` and the sidebar warn before that, and lets an operator pin
+    a verified id instead of guessing.
+
+    Raises:
+        LLMInferenceError: If no key is configured or the call fails.
+    """
+    if not api_key:
+        raise LLMInferenceError(
+            "GROQ_API_KEY is not set; cannot list Groq models.",
+            details={"provider": "groq"},
+        )
+    try:
+        client = Groq(api_key=api_key)
+        page = client.models.list()
+        return sorted({m.id for m in page.data})
+    except Exception as exc:
+        raise LLMInferenceError(
+            f"Could not list Groq models: {str(exc)[:200]}",
+            details={"error": str(exc)},
+        ) from exc
+
+
+def groq_model_available(model: str = GROQ_MODEL, api_key: str = GROQ_API_KEY) -> bool | None:
+    """
+    Whether ``model`` is in the live Groq catalogue.
+
+    Returns None when the check cannot be made (no key, or the call failed) —
+    "unknown" must not be reported as "unavailable".
+    """
+    if not api_key:
+        return None
+    try:
+        return model in list_groq_models(api_key)
+    except LLMInferenceError:
+        return None
+
+
 # ── Shared utilities ───────────────────────────────────────────────────────────
 
 def _extract_source_metadata(package: PromptPackage) -> list[dict]:
@@ -293,6 +342,10 @@ def _extract_source_metadata(package: PromptPackage) -> list[dict]:
             # cross-encoder's and this is what dense retrieval originally gave.
             "retrieval_score": round(chunk.retrieval_score, 4),
             "script":          chunk.metadata.get("script", "unknown"),
+            # The passage itself, so a client can show the cited text inline
+            # instead of only a filename and page number. Truncated to a
+            # citation-sized excerpt; the full passage stays in the index.
+            "text":            (chunk.text or "")[:1200],
         }
         for chunk in package.context_chunks
     ]
@@ -371,6 +424,7 @@ class Generator:
         answer = active.generate(
             package.user_prompt,
             system_prompt=package.system_prompt,
+            history=package.history,
         )
         return GeneratedResponse(
             answer            = answer,

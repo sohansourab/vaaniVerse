@@ -89,6 +89,16 @@ _DUPLICATE_DIACRITIC = re.compile(r"([\u0C01-\u0C03])\1+")
 # conjuncts, e.g. "స్ వభావం" → "స్వభావం"
 _BROKEN_CONJUNCT = re.compile(r"(\u0C4D)\s+(?=[\u0C15-\u0C39\u0C58-\u0C5A])")
 
+# A space injected between a base letter and a *combining* mark it belongs to.
+# This is the single most common Telugu PDF-extraction artifact and it directly
+# weakens embeddings: "మ ైన" renders as మ + space + ై, which is not the word
+# "మైన" to the tokenizer. A combining mark (matra / virama / anusvara / visarga)
+# can never legitimately begin a word, so removing the space is always a repair,
+# never a corruption.
+_SPACED_DIACRITIC = re.compile(
+    r"([\u0C00-\u0C7F])\s+(?=[\u0C01-\u0C04\u0C3E-\u0C4C\u0C4E-\u0C56])"
+)
+
 # Lone virama at end of word (orphaned killer — PDF artifact)
 _ORPHAN_VIRAMA = re.compile(r"\u0C4D(\s|$)")
 
@@ -169,7 +179,8 @@ def repair_telugu_unicode(text: str) -> str:
         2. Collapse duplicate matras       — ాా → ా  (common artifact).
         3. Collapse duplicate diacritics   — ంం → ం.
         4. Heal broken conjuncts           — స్ వభావం → స్వభావం.
-        5. Drop orphaned virama at word boundaries.
+        5. Rejoin a spaced combining mark  — మ ైన → మైన.
+        6. Drop orphaned virama at word boundaries.
 
     Must run after `unicode_normalize` so canonical forms are already
     composed. Only meaningful for text detected as Telugu or mixed.
@@ -178,6 +189,11 @@ def repair_telugu_unicode(text: str) -> str:
     text = _DUPLICATE_MATRA.sub(r"\1", text)
     text = _DUPLICATE_DIACRITIC.sub(r"\1", text)
     text = _BROKEN_CONJUNCT.sub(_VIRAMA, text)
+    # Run repeatedly: "మ  ైన" (double space) needs more than one pass.
+    previous = None
+    while previous != text:
+        previous = text
+        text = _SPACED_DIACRITIC.sub(r"\1", text)
     text = _ORPHAN_VIRAMA.sub(r"\1", text)
     return text
 
