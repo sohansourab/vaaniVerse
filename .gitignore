@@ -15,6 +15,7 @@ data/
 # silently start committing its results.
 eval/*.json
 eval/*.jsonl
+eval/*.log
 !eval/gold_qa.jsonl
 
 # Partially-downloaded files (browser .crdownload / temp) — datasets and models
