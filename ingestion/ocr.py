@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from core import config
 from core.exceptions import OCREngineError
@@ -194,6 +194,53 @@ def resolve_engine(requested: str | None = None) -> str:
     return requested
 
 
+# ── pre-processing ─────────────────────────────────────────────────────────────
+
+def _otsu_threshold(gray: Image.Image) -> int:
+    """Otsu's threshold from a grayscale image's histogram (pure PIL)."""
+    histogram = gray.histogram()[:256]
+    total = sum(histogram)
+    if total == 0:
+        return 128
+    sum_total = sum(i * h for i, h in enumerate(histogram))
+    sum_background = 0.0
+    weight_background = 0
+    best_threshold, best_variance = 128, -1.0
+    for t in range(256):
+        weight_background += histogram[t]
+        if weight_background == 0:
+            continue
+        weight_foreground = total - weight_background
+        if weight_foreground == 0:
+            break
+        sum_background += t * histogram[t]
+        mean_background = sum_background / weight_background
+        mean_foreground = (sum_total - sum_background) / weight_foreground
+        variance = (
+            weight_background * weight_foreground
+            * (mean_background - mean_foreground) ** 2
+        )
+        if variance > best_variance:
+            best_variance = variance
+            best_threshold = t
+    return best_threshold
+
+
+def _preprocess(image: Image.Image) -> Image.Image:
+    """
+    Grayscale → autocontrast → Otsu binarize.
+
+    Old Telugu print is low-contrast and foxed; binarizing against an adaptive
+    threshold measurably helps Tesseract more than it hurts a clean scan, and the
+    step is cheap relative to recognition. Kept pure-Pillow so no OpenCV or
+    scikit-image dependency is pulled in for it.
+    """
+    gray = image.convert("L")
+    gray = ImageOps.autocontrast(gray, cutoff=1)
+    threshold = _otsu_threshold(gray)
+    return gray.point(lambda pixel: 255 if pixel > threshold else 0, mode="1")
+
+
 # ── engines ────────────────────────────────────────────────────────────────────
 
 def _run_tesseract(image: Image.Image, lang_spec: str, psm: int) -> OCRResult:
@@ -260,16 +307,21 @@ def ocr_image(
     image: Image.Image,
     engine: str | None = None,
     lang: str = "te,en",
-    psm: int = 3,
+    psm: int | None = None,
+    preprocess: bool | None = None,
 ) -> OCRResult:
     """
     Transcribe one image.
 
     Args:
-        image:  Anything Pillow can open — a rasterized PDF page or a crop.
-        engine: "tesseract" | "easyocr" | "auto" | None (auto).
-        lang:   ISO 639-1 codes, comma/plus separated.
-        psm:    Tesseract page-segmentation mode. 3 = full page, 7 = single line.
+        image:      Anything Pillow can open — a rasterized PDF page or a crop.
+        engine:     "tesseract" | "easyocr" | "auto" | None (auto).
+        lang:       ISO 639-1 codes, comma/plus separated.
+        psm:        Tesseract page-segmentation mode. Defaults to config.OCR_PSM
+                    (6 = a uniform block of text, which fits a body page better
+                    than 3's automatic layout analysis on marked-up scans).
+        preprocess: Grayscale + autocontrast + Otsu binarize before recognition.
+                    Defaults to config.OCR_PREPROCESS.
 
     Raises:
         OCREngineError: if the requested engine is missing or fails a hard error.
@@ -279,6 +331,14 @@ def ocr_image(
 
     chosen = resolve_engine(engine)
     runner = _ENGINES[chosen]
+
+    if preprocess is None:
+        preprocess = config.OCR_PREPROCESS
+    if preprocess:
+        image = _preprocess(image)
+
+    if psm is None:
+        psm = config.OCR_PSM
 
     try:
         if chosen == "tesseract":

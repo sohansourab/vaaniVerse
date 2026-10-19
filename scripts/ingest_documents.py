@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import logging
 import sys
 import time
@@ -84,12 +85,22 @@ def _format_duration(seconds: float) -> str:
 # Per-document pipeline
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _file_sha256(path: Path) -> str:
+    """Content hash, so a re-ingest of an identical file is a true no-op."""
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def ingest_file(
     pdf_path:      Path,
     store:         VectorStore | None,
     chunk_size:    int,
     chunk_overlap: int,
     dry_run:       bool,
+    replace:       bool = True,
 ) -> dict:
     """
     Runs the full ingestion pipeline for a single PDF.
@@ -104,11 +115,12 @@ def ingest_file(
         }
     """
     result = {
-        "file":   pdf_path.name,
-        "status": "failed",
-        "pages":  0,
-        "chunks": 0,
-        "error":  None,
+        "file":    pdf_path.name,
+        "status":  "failed",
+        "pages":   0,
+        "chunks":  0,
+        "removed": 0,
+        "error":   None,
     }
 
     # ── Parse ──────────────────────────────────────────────────────────────────
@@ -150,6 +162,23 @@ def ingest_file(
         logger.info(f"  Dry run   → skipping embed + index for {pdf_path.name}")
         return result
 
+    # ── Idempotency: drop any earlier copy of this source ──────────────────────
+    if replace:
+        try:
+            removed = store.remove_source(pdf_path.name, persist=False)
+            if removed:
+                result["removed"] = removed
+                logger.info(
+                    f"  Replace   → removed {removed} existing chunks for {pdf_path.name}"
+                )
+        except VectorStoreError as exc:
+            logger.warning(f"  Could not remove existing chunks: {exc.message}")
+
+    file_hash = _file_sha256(pdf_path)
+    for chunk in chunks:
+        chunk.metadata["file_hash"] = file_hash
+        chunk.metadata["source"]    = pdf_path.name
+
     # ── Embed + Index ──────────────────────────────────────────────────────────
     try:
         logger.info(f"  Embedding → {pdf_path.name}")
@@ -159,6 +188,7 @@ def ingest_file(
         return result
 
     result["status"] = "success"
+    result["file_hash"] = file_hash
     return result
 
 
@@ -207,6 +237,12 @@ def parse_args() -> argparse.Namespace:
         action  = "store_true",
         help    = "Do not save index to disk after ingestion (FAISS only).",
     )
+    parser.add_argument(
+        "--no-replace",
+        action  = "store_true",
+        help    = "Append instead of replacing an existing copy of the same source "
+                  "(the old behaviour; risks duplicate vectors).",
+    )
     return parser.parse_args()
 
 
@@ -249,6 +285,7 @@ def main() -> None:
             chunk_size    = args.chunk_size,
             chunk_overlap = args.overlap,
             dry_run       = args.dry_run,
+            replace       = not args.no_replace,
         )
         result["duration"] = _format_duration(time.time() - file_start)
         results.append(result)
