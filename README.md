@@ -66,6 +66,29 @@ those as first-class problems.
 
 ---
 
+## Proof of work — answer generation
+
+Ask a question in **Telugu**, **Romanized Telugu**, or **English** against the sample book and check
+the grounded answer plus its citations.
+
+**Sample book for testing:** [**who-am-i-telugu** — *Who Am I?* (Telugu, Archive.org)](https://archive.org/details/who-am-i-telugu)
+
+<br/>
+
+**1 · Ingest the sample book**
+
+<img src="images/1.jpeg" width="800" alt="1 — Ingesting the sample Telugu book" />
+
+**2 · Retrieve grounded passages**
+
+<img src="images/2.jpeg" width="800" alt="2 — Retrieved source passages with citations" />
+
+**3 · Generate the answer**
+
+<img src="images/3.jpeg" width="800" alt="3 — Grounded answer generation with citations" />
+
+---
+
 ## Architecture
 
 The codebase is split into four responsibilities — **interface → application → domain → infrastructure** —
