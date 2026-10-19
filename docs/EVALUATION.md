@@ -321,11 +321,16 @@ candidates are re-scored locally, so there is no HTTP connection to lose:
 | Metric | Dense | + reranker | Δ |
 | --- | --- | --- | --- |
 | Recall@5 (30 in-corpus, original set) | 0.900 | **0.9333** | **+0.0333** (one question) |
-| Mean latency / query | 802 ms | 65 030 ms | **+64.2 s** |
+| Mean latency / query | 973 ms | 77 107 ms | **+77.1 s** |
+
+Latency is the reranker's own scoring time (`eval/reranker.json: delta.latency_ms_added`); the dense
+stage still runs first, so a user waits the sum, ~78.1 s. An earlier run of the same script measured
+65.0 s, and the 12 s spread is CPU thermal variance on the same machine, not a code change — both
+runs agree on the recall figure exactly.
 
 **Verdict: keep `RERANK_ENABLED=false`.** The lift is a single question out of 30 — well inside the
 noise of a 33-chunk corpus — and `RERANK_CANDIDATES=20` means the reranker sees only ~61% of that
-corpus, so the number is not evidence at scale. Against that, **+64 s/query on CPU is fatal for an
+corpus, so the number is not evidence at scale. Against that, **+77 s/query on CPU is fatal for an
 interactive demo.** The reranker is implemented and tested; it is simply not worth its cost here,
 and that is now a measured conclusion rather than an assumption.
 

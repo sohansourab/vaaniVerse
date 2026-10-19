@@ -123,8 +123,12 @@ def main() -> int:
         },
         "delta": {
             "recall_at_k": round(mean(rerank_recall) - mean(dense_recall), 4),
+            # The reranker's own scoring time — this is the *added* cost, because
+            # the dense stage still runs first and its candidates are what get
+            # re-scored. `total_latency_ms_mean` is what a user actually waits.
             "latency_ms_added": round(mean(rerank_ms), 2),
         },
+        "total_latency_ms_mean": round(mean(dense_ms) + mean(rerank_ms), 2),
     }
 
     args.out.parent.mkdir(parents=True, exist_ok=True)

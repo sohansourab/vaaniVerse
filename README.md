@@ -21,7 +21,7 @@
 [![Embeddings](https://img.shields.io/badge/Embeddings-BGE--M3-orange)](https://huggingface.co/BAAI/bge-m3)
 [![Vectors](https://img.shields.io/badge/Vectors-FAISS-yellow)](https://github.com/facebookresearch/faiss)
 [![LLM](https://img.shields.io/badge/LLM-Ollama%20%7C%20Groq-8A2BE2)](https://groq.com)
-[![Tests](https://img.shields.io/badge/tests-15%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-204%20passing-brightgreen)](#testing)
 [![License](https://img.shields.io/badge/License-MIT-purple)](LICENSE)
 
 </div>
@@ -48,8 +48,11 @@ those as first-class problems.
 | Telugu PDFs extract badly | Unicode artifact repair (duplicate matras, broken conjuncts, zero-width chars) |
 | Some pages are just pictures | OCR fallback (Tesseract / EasyOCR) for pages with no usable text layer |
 | Generic splitting destroys context | Sentence-aware, overlap-aware chunking with per-chunk metadata |
+| One threshold for every script | Per-script, measured score thresholds — native Telugu embeds closer to the corpus than roman or English does, so a single cutoff silently rejects English questions retrieval ranked correctly |
 | Model answers from memory | Evidence-only prompting; abstains when sources don't cover the question |
-| Answers can't be verified | Every response returns `sources_used` with source, page, and score |
+| Answers can't be verified | Every response returns `sources_used` with source, page, score **and the cited passage**, plus a claim-by-claim verification verdict |
+| A follow-up question has no context | Client-supplied conversation history is passed as real chat turns — never as sources, so it cannot be cited |
+| Destructive endpoints were open | `/ingest` and `/index/reset` require `X-API-Key` once `VANIVERSE_API_KEY` is set; `/health` reports `auth_configured` |
 
 > **Live demo:** <https://vaaniverse-27.streamlit.app/> — hosted on Streamlit Community Cloud.
 > There is no Ollama there, so it runs the **Groq** provider, and the container disk is ephemeral:
@@ -58,11 +61,14 @@ those as first-class problems.
 
 > **Status:** Phases 1–2 complete — the end-to-end pipeline runs, the API and UI are live, the
 > provider switch (Ollama ⇆ Groq) is implemented and tested, and retrieval is measured at
-> **90% recall@5** ([docs/EVALUATION.md](docs/EVALUATION.md)). Phase 3 (robustness) is in progress:
-> the Romanized-Telugu transliteration fix is **done**, OCR-first ingestion for image-only pages is
-> **shipped** as a pluggable engine layer ([docs/OCR.md](docs/OCR.md)), and a cross-encoder reranker
-> is implemented but **off by default and not yet measured end-to-end**. Languages beyond
-> Telugu/English remain a roadmap item. See [Known limitations](#known-limitations).
+> **91.9% recall@5** against a 15% random baseline on a 53-question gold set
+> ([docs/EVALUATION.md](docs/EVALUATION.md)). Phase 3 (robustness) is in progress: the
+> Romanized-Telugu transliteration fix is **done** (romanized recall 60% → 100%), OCR-first ingestion
+> for image-only pages is **shipped** as a pluggable engine layer ([docs/OCR.md](docs/OCR.md)),
+> per-script relevance thresholds are **calibrated from measurement** (in-corpus gate passage
+> 81.1% → 94.6%), and the cross-encoder reranker is implemented, **measured end-to-end, and off by
+> default** — it buys one question in 30 for +77 s/query on CPU. Languages beyond Telugu/English
+> remain a roadmap item. See [Known limitations](#known-limitations).
 
 ---
 
@@ -72,6 +78,20 @@ Ask a question in **Telugu**, **Romanized Telugu**, or **English** against the s
 the grounded answer plus its citations.
 
 **Sample book for testing:** [**who-am-i-telugu** — *Who Am I?* (Telugu, Archive.org)](https://archive.org/details/who-am-i-telugu)
+
+One command downloads and ingests it, so a fresh clone is not a dead app:
+
+```bash
+python -m scripts.load_sample          # download + ingest + persist the index
+python -m scripts.load_sample --dry-run  # parse and chunk only, no embedding
+```
+
+Or upload any Telugu PDF in the sidebar. The PDF is not committed (third-party, and `data/` is
+gitignored), which is why a script does the fetching.
+
+> **Do not add the sample to an index you evaluate against.** `eval/gold_qa.jsonl` matches answers by
+> **page number** only, and this is a different book that also starts at page 1. Run
+> `DELETE /index/reset` first if you want the published numbers to reproduce.
 
 <br/>
 
@@ -234,13 +254,14 @@ flowchart TD
     IDX -->|"no"| E503B["503 — index is empty"]
     IDX -->|"yes"| DET["detect_script → normalize<br/>repair / transliterate by script"]
     DET --> EMB["Embed query — BGE-M3"]
-    EMB --> SEARCH["FAISS search<br/>top_k, score_threshold"]
+    EMB --> SEARCH["Search — dense, or hybrid if enabled<br/>top_k, per-script threshold"]
     SEARCH --> HITS{"Any chunks<br/>above threshold?"}
     HITS -->|"no"| ABSTAIN["Abstention prompt<br/>no sources attached"]
-    HITS -->|"yes"| BUILD["Build grounded prompt<br/>[SOURCE N] labels"]
+    HITS -->|"yes"| BUILD["Build grounded prompt<br/>[SOURCE N] labels + history"]
     BUILD --> LLM["Generator — provider facade"]
     ABSTAIN --> LLM
-    LLM --> ANS["Answer + sources_used<br/>+ query_script + model"]
+    LLM --> VER["verify — claim ↔ cited passage"]
+    VER --> ANS["Answer + sources_used (with text)<br/>+ query_script + verification"]
 ```
 
 The round trip, step by step:
@@ -330,19 +351,22 @@ transcription of old print, is in [docs/OCR.md](docs/OCR.md).
 
 | Module | Responsibility | Key entry points |
 | --- | --- | --- |
-| `api/main.py` | HTTP orchestration; startup singletons for store + generator | `lifespan`, 6 endpoints |
-| `core/config.py` | Single source of truth for env-driven settings | `LLM_PROVIDER`, `FAISS_*_PATH`, `TOP_K`, `SCORE_THRESHOLD` |
+| `api/main.py` | HTTP orchestration; startup singletons for store + generator | `lifespan`, 9 endpoints |
+| `core/config.py` | Single source of truth for env-driven settings | `LLM_PROVIDER`, `FAISS_*_PATH`, `TOP_K`, `threshold_for_script()` |
+| `core/security.py` | API-key auth, in-process rate limiting, request telemetry | `require_api_key`, `rate_limit_guard`, `recent_requests()` |
 | `core/exceptions.py` | Typed domain errors with structured `details` | `VaaniverseBaseError` + 12 subclasses |
 | `ingestion/parser.py` | PDF → pages with layout metadata; OCR fallback for scans | `parse_document()` |
 | `ingestion/ocr.py` | Pluggable Telugu OCR for image-only pages | `ocr_image()`, `resolve_engine()`, `available_engines()` |
 | `ingestion/normalizer.py` | Script detection, Unicode repair, transliteration | `detect_script()`, `normalize()`, `repair_telugu_unicode()` |
 | `ingestion/chunker.py` | Sentence-aware packing with overlap + metadata | `chunk_document()`, `chunk_page()` |
 | `retrieval/embeddings.py` | Lazy-loaded BGE-M3 dense encoder | `get_model()`, `embed_chunks()`, `embed_query()` |
-| `retrieval/vector_store.py` | Backend-agnostic store; FAISS + Qdrant adapters | `VectorStore`, `FAISSVectorStore`, `QdrantVectorStore` |
+| `retrieval/vector_store.py` | Backend-agnostic store; FAISS + Qdrant adapters; persists to disk | `VectorStore`, `remove_source()`, `sources()`, `reset()` |
+| `retrieval/hybrid.py` | Optional BM25 + dense fusion (weighted RRF), off by default | `hybrid_search()` |
 | `reasoning/prompter.py` | Evidence-only prompts with `[SOURCE N]` labels | `build_prompt()`, `build_no_result_prompt()` |
+| `reasoning/verify.py` | Checks each cited claim against the passage it cites | `verify_answer()` |
 | `reasoning/generator.py` | Provider-agnostic LLM facade | `Generator`, `OllamaProvider`, `GroqProvider` |
 | `frontend/app.py` | Streamlit UI + embedded-API bootstrap | `ensure_api_ready()`, `query_api()` |
-| `scripts/*` | Batch ingestion, benchmarking, evaluation | see [CLI](#cli) |
+| `scripts/*` | Batch ingestion, sample bootstrap, benchmarking, evaluation | see [CLI](#cli) |
 
 ---
 
@@ -350,12 +374,19 @@ transcription of old print, is in [docs/OCR.md](docs/OCR.md).
 
 | Method | Endpoint | Purpose | Failure modes |
 | --- | --- | --- | --- |
-| `GET` | `/health` | Liveness + index size + active provider + `groq_configured` | `503` store uninitialised |
-| `POST` | `/ingest` | Upload a PDF → parse → chunk → embed → persist | `422` not a PDF / unparseable / zero chunks · `500` save, chunk, or index failure |
-| `POST` | `/query` | End-to-end RAG with citations | `400` unknown provider · `503` Groq key missing or index empty · `502` LLM call failed |
-| `GET` | `/search` | Retrieval only — no LLM, useful for debugging recall | `503` index empty · `500` retrieval failure |
+| `GET` | `/health` | Liveness + index size + active provider + `groq_configured` + `auth_configured` | `503` store uninitialised |
+| `POST` | `/ingest` | Upload a PDF → parse → chunk → embed → persist. Replaces any earlier copy of the same source | `401` bad/missing `X-API-Key` · `413` over `MAX_UPLOAD_MB` · `422` not a PDF / unparseable / zero chunks · `429` rate limit · `500` save, chunk, or index failure |
+| `POST` | `/query` | End-to-end RAG with citations, verification, optional conversation history | `400` unknown provider · `429` rate limit · `503` Groq key missing or index empty · `502` LLM call failed |
+| `POST` | `/feedback` | Append a thumbs up/down on an answer to `data/feedback.jsonl` | `422` bad verdict · `429` rate limit |
+| `GET` | `/search` | Retrieval only — no LLM, useful for debugging recall | `503` index empty · `429` rate limit · `500` retrieval failure |
 | `GET` | `/index/stats` | Vector count and readiness | — |
-| `DELETE` | `/index/reset` | Drop the in-memory index | — |
+| `GET` | `/index/sources` | Distinct source filenames in the index (backs the UI filter) | — |
+| `DELETE` | `/index/reset` | Drop the index — in memory **and** on disk | `401` bad/missing `X-API-Key` |
+| `GET` | `/admin/requests` | Recent requests with latency/status (telemetry) | `401` bad/missing `X-API-Key` |
+
+The three authenticated routes are open when `VANIVERSE_API_KEY` is unset — that is the local
+development default, and `/health` reports `auth_configured: false` so the exposure is visible rather
+than silent.
 
 <details>
 <summary><b>Example — <code>POST /query</code></b></summary>
@@ -366,10 +397,12 @@ curl -s http://localhost:8000/query \
   -d '{
         "query": "నేను ఎవరు?",
         "top_k": 5,
-        "score_threshold": 0.45,
         "provider": "groq"
       }'
 ```
+
+Omit `score_threshold` to get the per-script default (0.41 for Telugu, 0.46 for roman/English) —
+whatever was applied comes back as `score_threshold_used`.
 
 ```jsonc
 {
@@ -381,11 +414,19 @@ curl -s http://localhost:8000/query \
   "backend": "groq",
   "sources_used": [
     { "chunk_id": "book_p1_0", "source": "book.pdf",
-      "page_number": 1, "score": 0.995, "retrieval_score": 0.6207,
-      "script": "telugu" }
+      "page_number": 1, "score": 0.6207, "retrieval_score": 0.6207,
+      "script": "telugu", "text": "…the cited passage itself…" }
   ],
   "total_chunks_retrieved": 5,
-  "reranked": true
+  "reranked": false,              // true only when RERANK_ENABLED is on
+  "hybrid": false,                // true only when HYBRID_ENABLED is on
+  "score_threshold_used": 0.41,
+  "verification": {
+    "passed": true,
+    "total_claims": 3, "uncited_claims": 0,
+    "invalid_citations": [], "comparable_claims": 3, "unsupported_claims": 0,
+    "min_support": 0.12, "flagged": []
+  }
 }
 ```
 
@@ -421,7 +462,7 @@ Every setting is environment-driven (`core/config.py`). Copy `.env.example` → 
 | --- | --- | --- |
 | `LLM_PROVIDER` | `ollama` | `ollama` \| `groq` |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | |
-| `OLLAMA_MODEL` | `llama3` | `.env.example` ships `qwen2.5:3b` (fits a 4 GB GPU) |
+| `OLLAMA_MODEL` | `qwen2.5:3b` | Fits a 4 GB GPU |
 | `OLLAMA_TEMPERATURE` | `0.2` | |
 | `GROQ_API_KEY` | *(empty)* | Supply via environment/secret store only |
 | `GROQ_MODEL` | `qwen/qwen3.8-27b` | Groq retires model ids; list current ones in their console |
@@ -433,13 +474,24 @@ Every setting is environment-driven (`core/config.py`). Copy `.env.example` → 
 | `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_COLLECTION` | `localhost` / `6333` / `vaaniverse` | |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `512` / `64` | Tokens |
 | `SPACY_MODEL` | `en_core_web_sm` | Telugu path is rule-based and does not need it |
-| `TOP_K` / `SCORE_THRESHOLD` | `5` / `0.45` | Retrieval defaults, overridable per request |
-| `RERANK_ENABLED` | `false` | Second-stage cross-encoder. **Off by default** — ~34 s/query on CPU |
+| `TOP_K` | `5` | Retrieval default, overridable per request |
+| `SCORE_THRESHOLD_TELUGU` | `0.41` | **Measured**, not guessed — see [docs/EVALUATION.md](docs/EVALUATION.md) |
+| `SCORE_THRESHOLD_ROMAN` | `0.46` | Applies to romanized Telugu **and** English |
+| `SCORE_THRESHOLD_MIXED` / `SCORE_THRESHOLD` | `0.45` / `0.45` | Mixed-script, and a fallback for undetected script |
+| `HYBRID_ENABLED` | `false` | BM25 + dense fusion (weighted RRF). Off by default; `HYBRID_ALPHA` / `HYBRID_CANDIDATES` / `RRF_K` tune it |
+| `RERANK_ENABLED` | `false` | Second-stage cross-encoder. **Off by default — measured at +77 s/query on CPU for +1 question in 30** |
 | `RERANK_MODEL` / `RERANK_DEVICE` | `BAAI/bge-reranker-v2-m3` / `cpu` | Device pinned to CPU so it stays off the embedder's GPU |
-| `RERANK_CANDIDATES` / `RERANK_THRESHOLD` | `20` / `0.5` | Candidates retrieved before reranking; threshold is **not calibrated** yet |
+| `RERANK_CANDIDATES` / `RERANK_THRESHOLD` | `20` / `0.5` | Candidates retrieved before reranking; threshold is **not calibrated** — it sits above the score a known-relevant passage gets |
+| `CITATION_VERIFY_ENABLED` | `true` | Flag claims the cited passage does not support. `CITATION_SUPPORT_MIN` = `0.12` |
+| `MAX_HISTORY_TURNS` / `MAX_HISTORY_CHARS` | `4` / `2000` | Client-supplied conversation, truncated |
+| `VANIVERSE_API_KEY` | *(empty)* | When set, `/ingest`, `DELETE /index/reset` and `/admin/requests` require `X-API-Key`. Unset ⇒ open |
+| `REQUIRE_AUTH_FOR_ALL` | `false` | Also require the key on `/query` and `/search` |
+| `RATE_LIMIT_ENABLED` / `RATE_LIMIT_PER_MINUTE` / `INGEST_LIMIT_PER_HOUR` | `true` / `60` / `10` | In-process limiter — insurance, not a gateway |
+| `MAX_UPLOAD_MB` / `MAX_PDF_PAGES` | `50` / `2000` | Rejected with `413` before the work is done |
 | `OCR_ENABLED` / `OCR_ENGINE` | `true` / `auto` | OCR runs only on pages with no usable text layer; `auto` = Tesseract, EasyOCR fallback |
 | `OCR_LANG` / `OCR_DPI` / `OCR_MIN_CHARS` | `te,en` / `200` / `16` | Telugu + English; below `OCR_MIN_CHARS` a page counts as image-only |
-| `API_HOST` / `API_PORT` / `API_RELOAD` | `0.0.0.0` / `8000` / `true` | |
+| `OCR_PREPROCESS` / `OCR_PSM` | `true` / `6` | Grayscale + autocontrast + Otsu before recognition; PSM 6 assumes a uniform block of text |
+| `API_HOST` / `API_PORT` / `API_RELOAD` | `0.0.0.0` / `8000` / `false` | Reload is off by default — the reloader doubles model memory and is wrong in a container |
 
 Built-in art-direction (dark "ink & turmeric" theme) lives in `.streamlit/config.toml`.
 
@@ -470,13 +522,16 @@ ollama pull qwen2.5:3b
 ollama serve
 ```
 
-**2 — Build an index from your own PDF:**
+**2 — Build an index — your own PDF, or the sample book:**
 
 ```bash
-python -m scripts.ingest_documents --input path/to/book.pdf
+python -m scripts.load_sample                              # public Telugu PDF, one command
+python -m scripts.ingest_documents --input path/to/book.pdf  # or your own
 ```
 
 The index is written to `data/vectors/`. The first run downloads BGE-M3 (~2.2 GB) from Hugging Face.
+Re-ingesting the same file is idempotent: that source's previous vectors are removed first, so the
+index does not silently accumulate duplicates.
 
 **3 — Run the app:**
 
@@ -491,20 +546,40 @@ That is enough. If no API is listening on port 8000, the UI starts one itself an
 uvicorn api.main:app --host 127.0.0.1 --port 8000   # then: streamlit run frontend/app.py
 ```
 
-Open <http://localhost:8501> and ask away. Sidebar controls: **Top K**, **Score threshold**,
-**Filter by source**, **LLM provider**, and PDF upload → **Ingest document**.
+Open <http://localhost:8501> and ask away. Sidebar controls: **Top K**, **threshold mode**
+(Automatic per-script, or Manual with a slider), **Filter by source**, **LLM provider**, and PDF
+upload → **Ingest document** with a progress bar. Answers show the cited passages, a verification
+badge, and thumbs up/down whose verdict is appended to `data/feedback.jsonl`.
 
 ### CLI
 
 ```bash
+# Bootstrap a public sample document (download → parse → chunk → embed → persist)
+python -m scripts.load_sample
+python -m scripts.load_sample --dry-run        # parse and chunk only
+
 # Batch-ingest a file or a whole directory, with optional dry run
 python -m scripts.ingest_documents --input docs/ --chunk-size 512 --overlap 64 --dry-run
 
 # Latency/recall benchmark against a running API
 python -m scripts.benchmark_retrieval --help
 
-# Answer quality: exact match, F1, citation precision/recall
-python -m scripts.evaluate_rag --help
+# Retrieval evaluation — no server needed in --offline mode
+python eval/run_eval.py --offline              # recall@k, MRR, gate behaviour
+python eval/run_eval.py                        # full run including /query (slow: LLM calls)
+
+# Answer quality: reference-free LLM judge over an eval run's answers
+python eval/judge_answers.py --results eval/results.jsonl
+python eval/judge_answers.py --emulated        # no model: exercises the plumbing
+
+# Re-derive the per-script cutoffs from the current corpus + embedder
+python -m scripts.calibrate_threshold
+
+# Measure the reranker against dense retrieval (loads two models; ~35 min on CPU)
+python -m scripts.measure_reranker --out eval/reranker.json
+
+# Citation metrics from an emitted results file (F1/EM are not meaningful here — see Evaluation)
+python -m scripts.evaluate_rag --results eval/results.jsonl
 ```
 
 ### Docker
@@ -530,38 +605,48 @@ vaaniVerse/
 │   └── main.py                 # FastAPI app, endpoints, lifespan singletons
 ├── core/
 │   ├── config.py               # environment-driven settings
+│   ├── security.py             # API-key auth · rate limiting · request telemetry
 │   └── exceptions.py           # typed domain errors
 ├── ingestion/
 │   ├── parser.py               # PDF → pages (+ layout metadata)
+│   ├── ocr.py                  # pluggable Telugu OCR for image-only pages
 │   ├── normalizer.py           # script detection · Unicode repair · transliteration
 │   └── chunker.py              # sentence-aware, overlap-aware chunking
 ├── retrieval/
 │   ├── embeddings.py           # BGE-M3 dense encoder (1024-d, L2-normalised)
-│   └── vector_store.py         # VectorStore facade + FAISS / Qdrant backends
+│   ├── vector_store.py         # VectorStore facade + FAISS / Qdrant backends
+│   └── hybrid.py               # optional BM25 + dense fusion (RRF)
 ├── reasoning/
 │   ├── prompter.py             # source-grounded prompt construction
+│   ├── verify.py               # claim ↔ citation checking
 │   └── generator.py            # provider facade — Ollama | Groq
 ├── frontend/
 │   └── app.py                  # Streamlit UI + embedded-API bootstrap
 ├── scripts/
+│   ├── load_sample.py          # download + ingest the public sample book
 │   ├── ingest_documents.py     # batch ingestion CLI
 │   ├── benchmark_retrieval.py  # retrieval latency benchmark
-│   └── evaluate_rag.py         # EM / F1 / citation metrics
+│   ├── calibrate_threshold.py  # per-script cutoff calibration
+│   ├── measure_reranker.py     # dense vs reranked retrieval, in process
+│   └── evaluate_rag.py         # citation metrics over an emitted results file
 ├── eval/
-│   ├── gold_qa.jsonl           # gold set: 30 in-corpus + 10 out-of-domain questions
-│   └── run_eval.py             # retrieval · grounding · latency evaluation
-├── tests/
-│   ├── test_api_providers.py   # provider routing at the HTTP layer
-│   └── test_llm_providers.py   # provider behaviour in isolation
+│   ├── gold_qa.jsonl           # gold set: 37 in-corpus + 16 out-of-domain questions
+│   ├── run_eval.py             # retrieval · grounding · latency evaluation
+│   └── judge_answers.py        # reference-free LLM judge of answer quality
+├── tests/                      # 204 tests; provider, retrieval, security, eval harness
 ├── docs/
 │   ├── ARCHITECTURE.md         # full design rationale
 │   ├── DESIGN-NOTES.md         # long-form design rationale
 │   ├── EVALUATION.md           # measured results and methodology
+│   ├── OCR.md                  # OCR engine support and measured CER
 │   └── ROADMAP.md              # milestones and exit criteria
+├── .github/workflows/ci.yml    # pytest on 3.12/3.13 (+ gated offline retrieval eval)
 ├── .streamlit/config.toml      # UI theme
+├── conftest.py                 # puts the repo root on sys.path for bare `pytest`
 ├── Dockerfile                  # two-stage, non-root container
 ├── requirements.txt            # runtime deps
 ├── requirements-dev.txt        # pytest
+├── requirements-ocr.txt        # optional OCR engines (pytesseract, easyocr)
 └── .env.example                # config template (no secrets)
 ```
 
@@ -572,50 +657,68 @@ The `.pkl` metadata file embeds source text, so it is deliberately never committ
 
 ## Evaluation
 
-Measured on the local stack — 40 gold questions (30 in-corpus across Telugu, romanized Telugu and
-English; 10 out-of-domain probes), `qwen2.5:3b` + BGE-M3 + FAISS, `top_k=5`.
+Measured on the local stack — **53 gold questions** (37 in-corpus across Telugu, romanized Telugu and
+English; 16 out-of-domain probes), BGE-M3 + FAISS with `qwen2.5:3b`, `top_k=5`. Retrieval-layer rows
+are current; end-to-end rows marked ¹ are a pre-fix baseline (see the footnote).
 
 | Layer | Metric | Result |
 | --- | --- | --- |
-| Retrieval | **Recall@5** | **0.900** (random baseline 0.152) |
-| Retrieval | MRR | **0.686** |
-| Retrieval | Latency (embed + search) | **277 ms** p50 |
-| Retrieval | Latency with reranking on | **~34 s** p50 — CPU-only, off by default |
-| Retrieval | In-corpus queries clearing the 0.45 gate | 76.7% |
-| Retrieval | Out-of-domain queries clearing the 0.45 gate | **0/10 (0%)** |
+| Retrieval | **Recall@5** | **0.9189** (random baseline 0.1515) |
+| Retrieval | Precision@5 | 0.2378 |
+| Retrieval | MRR | **0.6964** |
+| Retrieval | Latency (embed + search) | **294 ms** p50 |
+| Retrieval | Latency with reranking on | **+77 s** per query — CPU-only, off by default |
+| Retrieval | In-corpus queries clearing the gate | **94.6%** with per-script cutoffs · 81.1% with a single 0.45 |
+| Retrieval | Out-of-domain queries clearing the gate | **1/16 (6.25%)** — a Telugu near-miss, see below |
 | Grounding | Out-of-domain questions refused | **10/10 (100%)** ¹ |
 | Grounding | Grounded answer rate | **56.7%** (17/30) ¹ |
 | Grounding | False abstention on in-corpus questions | 30% ¹ |
 | End-to-end | Latency | 6.2 s p50 · 30.8 s p95 ¹ |
 
-Recall by query language: English **1.00** · Telugu **0.85** · romanized Telugu **1.00**.
+Recall by query language: English **1.00** · romanized Telugu **1.00** · Telugu **0.8696**.
 
-¹ Measured **before** the romanized-transliteration fix, and not yet re-run — these rows will move
-(fewer false abstentions) once they are. Every retrieval-layer row, including both gate rates, was
-re-measured after it. See [docs/EVALUATION.md](docs/EVALUATION.md) for the before/after detail.
+¹ Measured **before** the romanized-transliteration fix and before the per-script cutoffs, and not
+re-run — producing them needs an LLM, which the machine used for the retrieval runs does not have
+reachable. The gate now passes 94.6% of in-corpus questions instead of 76.7%, so false abstention
+should be materially lower than the 30% below. Every retrieval-layer row, including both gate rates,
+**is** current. See [docs/EVALUATION.md](docs/EVALUATION.md).
 
-**Cross-encoder reranking is implemented, tested, and available — but off by default and not
-measured end-to-end.** `RERANK_ENABLED=true` adds a second stage that re-scores the top
-`RERANK_CANDIDATES` (20) passages with `BAAI/bge-reranker-v2-m3` before the top 5 are returned. It
-is unit-tested (17 tests, offline), verified to reorder results while preserving the dense score
-separately as `retrieval_score`, and sanity-checked on the real corpus (`నేను ఎవరు?` scores the
-relevant passage 0.3666 against 0.0000 for an unrelated one). It is off by default for two measured
-reasons — **~34 s per query** on CPU, since each candidate is a full ~512-token chunk, and a second
-~2.3 GB model that does not fit next to BGE-M3 on Streamlit Cloud. **No reranked recall figure is
-claimed:** the before/after run was lost twice to a Windows uvicorn accept-loop fault and cut for
-time, and `RERANK_CANDIDATES=20` covers ~61% of a 33-chunk corpus, so a lift here would be easy to
-inflate anyway. See [docs/EVALUATION.md](docs/EVALUATION.md) for how to reproduce it.
+**The one out-of-domain leak** is a Telugu near-miss — "ఈ పుస్తకం రచయిత ఎవరు?" (*who is the author of
+this book?*) — which scores 0.4717, just over the 0.41 Telugu cutoff. Its English equivalent is
+correctly refused. A similarity cutoff cannot separate that; the prompt's own abstention rule is the
+second line of defence.
+
+**Cross-encoder reranking is implemented, tested, and measured — and off by default.** `RERANK_ENABLED=true`
+re-scores the top `RERANK_CANDIDATES` (20) passages with `BAAI/bge-reranker-v2-m3` before the top 5
+are returned. Measured in process against the same index (`scripts/measure_reranker.py`):
+recall@5 **0.900 → 0.9333** — one extra question out of 30 — for **+77 s per query** on CPU, since
+each candidate is a full ~512-token chunk. It is off by default because that trade is not worth it
+for an interactive demo, which is now a measured conclusion rather than an assumption. It also costs
+a second ~2.3 GB model next to BGE-M3. Note `RERANK_THRESHOLD=0.5` is still **uncalibrated** and sits
+above the 0.3666 a known-relevant passage scores, so it must be tuned before reranking is enabled
+anywhere real. See [docs/EVALUATION.md](docs/EVALUATION.md) for the full table.
+
+**Answer quality is measured by a separate harness.** `eval/judge_answers.py` is a reference-free LLM
+judge: given only the question, the answer, and the passages the system cited, it scores relevance,
+faithfulness, conciseness and overall, and rules on language and on whether abstaining was right.
+Token-F1 and exact match are deliberately **not** reported — the stored Telugu is font-mangled by PDF
+extraction, so a correct answer never string-matches it, and those metrics would score extraction
+damage rather than answer quality. **The judge has not been run yet**, for the same no-LLM reason as
+the end-to-end rows; `--emulated` and the unit tests exercise the plumbing without a model.
 
 **Honest reading.** Retrieval is solid and works *cross-lingually* — an English question reliably
-surfaces Telugu passages. Out-of-domain questions are refused rather than answered: zero
-hallucinations across 10 probes, including the fabrication traps "Who is the author of this book?"
-and "What is the price of this book?". The cost is a conservative system — the `0.45` score threshold
-also stops **23.3%** of genuine questions at the retrieval gate. And generation quality, not plumbing,
-is the ceiling at 3B parameters.
+surfaces Telugu passages (7/7). Out-of-domain questions are refused at the gate: 15 of 16 probes,
+including the fabrication traps "Who is the author of this book?" and "What is the price of this
+book?", never reach the LLM. Retrieval misses 3 of 37 questions: two (`t07`, `t08`) are "adjacent
+page" cases where the answer continues a list started on the neighbouring page, and one (`t19`) is a
+genuine miss. The remaining weakness is twofold: a similarity cutoff that trades recall against
+leakage, and generation quality at 3B parameters, which is a model-size limit rather than a wiring
+problem.
 
 ```bash
-python eval/run_eval.py --skip-query     # retrieval only, ~30 s, no LLM calls
-python eval/run_eval.py                  # full run, ~20 min on a GTX 1650
+python eval/run_eval.py --offline        # retrieval only, in-process, ~30 s, no LLM or server
+python eval/run_eval.py                  # full run including /query, ~20 min on a GTX 1650
+python eval/judge_answers.py             # score the answers from that run (needs an LLM)
 ```
 
 Full methodology, per-query results, miss analysis and **threats to validity**:
@@ -627,18 +730,26 @@ Full methodology, per-query results, miss analysis and **threats to validity**:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q
-# 35 passed
+pytest -q          # works from the repo root either way (conftest.py puts it on sys.path)
+# 204 passed
 ```
 
-The suite covers the provider contract and normalization end to end without needing Ollama, Groq, or
-a GPU:
+Runs on CI against Python 3.12 and 3.13 (`.github/workflows/ci.yml`). Every test is offline — no
+Ollama, no Groq, no GPU, no network:
 
-- default provider is `ollama`; a per-request override is honoured
-- an unknown provider returns **400** with no downstream work
-- `groq` without a key returns **503** rather than crashing
-- `/health` reports `llm_default` and `groq_configured` accurately
-- Ollama/Groq providers raise typed errors on empty responses and connection failures
+- provider contract: default is `ollama`, a per-request override wins, an unknown provider returns
+  **400** with no downstream work, and `groq` without a key returns **503** rather than crashing
+- providers raise typed errors on empty responses and connection failures
+- `/health` reports `llm_default`, `groq_configured` and `auth_configured` accurately
+- auth: destructive routes are open with no key configured, then require a correct `X-API-Key`
+  (checked in constant time), and rate limiting returns **429** past the window
+- ingest: rejection paths (`422` non-PDF, `413` oversize), idempotent replacement, and the feedback log
+- retrieval: per-script threshold selection, hybrid tokenization that keeps Telugu combining marks
+  attached, FAISS persist/load/remove-source/reset round-trips
+- reasoning: claim↔citation verification, including the cross-script case that used to be a false
+  positive, and conversation-history truncation that skips malformed turns
+- eval harness: the judge's tolerant JSON parsing, its aggregation, and the sample downloader's
+  reject-a-non-PDF path
 
 ---
 
@@ -657,18 +768,29 @@ These are real and worth knowing before you rely on the system:
 3. **The local default model is small.** `qwen2.5:3b` produces repetitive, awkward Telugu. Wiring is
    correct; generation quality is a model-size question. `qwen/qwen3.8-27b` via Groq is
    substantially better.
-4. **Qdrant is implemented but not integration-tested.** FAISS is the tested path.
-5. **FAISS is in-memory and single-process.** No concurrency story, no scale-out, and no native
-   metadata filtering — `filter_by` is honoured on Qdrant only and ignored on FAISS.
-6. **Ingestion appends.** Both the CLI and `POST /ingest` add to an existing index; re-ingesting the
-   same PDF duplicates vectors. Use `DELETE /index/reset` (in-memory only) or remove
-   `data/vectors/*` and rebuild.
-7. **The index does not travel with the repo.** `data/` is gitignored, so any hosted deployment starts
-   with an empty index and must ingest before it can answer.
-8. **Streamlit Community Cloud is a tight fit.** No GPU, modest RAM, ephemeral disk. BGE-M3 needs
-   ~2.2 GB in fp32, and the index must be rebuilt after each cold start.
-9. **BGE-M3 loads lazily.** The first ingest or query pays the model-load cost (minutes on CPU, and a
-   one-time ~2.2 GB download). The UI shows a spinner; timeouts are raised accordingly.
+4. **Answer quality is not yet measured.** The judge harness exists (`eval/judge_answers.py`) and is
+   tested, but no judge run is claimed, because it needs an LLM this machine cannot reach. The
+   end-to-end grounding rows are likewise a pre-fix baseline.
+5. **Qdrant is implemented but not integration-tested.** FAISS is the tested path.
+6. **FAISS is single-process.** The index persists to disk and `filter_by` is honoured (applied over
+   metadata in Python), but there is no concurrency story, no scale-out, and no server-side filtering.
+7. **Reranking is off, and its threshold is uncalibrated.** Measured at +77 s/query for one extra
+   question in 30, and `RERANK_THRESHOLD=0.5` sits above the score a known-relevant passage gets, so
+   enabling it as-is would abstain on correct answers.
+8. **Hybrid retrieval is off by default.** BM25+dense fusion is implemented and unit-tested but has
+   not been shown to beat dense-only on this corpus, so it is not the shipped path.
+9. **The evaluation corpus is small and single-document.** 33 chunks from one book. `RERANK_CANDIDATES=20`
+   sees ~61% of it, so recall deltas of one or two questions are not evidence at scale.
+10. **The index does not travel with the repo.** `data/` is gitignored, so any hosted deployment starts
+    with an empty index and must ingest before it can answer —
+    `python -m scripts.load_sample` makes that one command.
+11. **Streamlit Community Cloud is a tight fit.** No GPU, modest RAM, ephemeral disk. BGE-M3 needs
+    ~2.2 GB in fp32, and the index must be rebuilt after each cold start.
+12. **BGE-M3 loads lazily.** The first ingest or query pays the model-load cost (minutes on CPU, and a
+    one-time ~2.2 GB download). The UI shows a spinner; timeouts are raised accordingly.
+13. **Auth is opt-in, and rate limiting is in-process.** With `VANIVERSE_API_KEY` unset the destructive
+    routes are open — correct for local work, wrong for anything reachable from outside. The limiter is
+    per-process, so it is insurance for a demo rather than a substitute for a gateway.
 
 ---
 
@@ -677,11 +799,11 @@ These are real and worth knowing before you rely on the system:
 | Phase | Focus | State |
 | --- | --- | --- |
 | **1 · Foundation** | Multilingual RAG pipeline, FastAPI, Streamlit, FAISS, provider switch, tests | ✅ Complete |
-| **2 · Evaluation** | 40-question gold set, recall@k, MRR, per-language and threshold analysis | ✅ Complete |
-| **3 · Robustness** | Transliteration, reranking, richer PDF layout handling, token estimation, OCR, provenance | 🔄 In progress |
+| **2 · Evaluation** | 53-question gold set, recall@k, MRR, per-language and threshold analysis, answer judge | ✅ Complete |
+| **3 · Robustness** | Transliteration ✅ · per-script thresholds ✅ · OCR ✅ · reranking measured ⏸️ (off) · richer PDF layout handling · provenance | 🔄 In progress |
 | **4 · Cultural intelligence** | Inscription understanding, historical documents, heritage knowledge graph, community workflows | Planned |
 | **5 · Indic expansion** | Hindi, Tamil, Kannada, Sanskrit, cross-language retrieval | Planned |
-| **6 · Production readiness** | Telemetry, health checks, rate limits, admin tooling, deployment | Planned |
+| **6 · Production readiness** | API-key auth ✅ · rate limits ✅ · telemetry + admin endpoint ✅ · metrics/observability · horizontal scale | 🔄 Started |
 
 [docs/ROADMAP.md](docs/ROADMAP.md) is the source of truth — detailed tasks, exit criteria and status
 for each milestone live there, and this table is its summary.
