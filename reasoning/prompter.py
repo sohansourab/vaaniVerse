@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from core.config import TOP_K
+from dataclasses import dataclass, field
+from core.config import MAX_HISTORY_CHARS, MAX_HISTORY_TURNS, TOP_K
 from core.exceptions import NoContextRetrievedError, PromptConstructionError
 from ingestion.normalizer import is_english_query
 from retrieval.vector_store import RetrievedChunk
@@ -26,6 +26,39 @@ class PromptPackage:
     user_prompt:    str
     context_chunks: list[RetrievedChunk]   # retained for API response metadata
     query:          str
+    # Prior turns ([{role, content}, …]) for conversational follow-ups. These are
+    # passed to the model as real chat turns, never as SOURCE BLOCKS, so a
+    # previous answer can inform a pronoun but can never be cited as evidence.
+    history:        list[dict] = field(default_factory=list)
+
+
+def _trim_history(history: list[dict] | None) -> list[dict]:
+    """
+    Keep the last MAX_HISTORY_TURNS turns under a character budget.
+
+    Oldest turns are dropped first. Empty or role-less entries are discarded so
+    a malformed client payload cannot reach the provider.
+    """
+    cleaned: list[dict] = []
+    for turn in history or []:
+        # The docstring promises a malformed payload is discarded, and the API
+        # schema enforces objects — but build_prompt is also called directly,
+        # so guard the type rather than trusting the caller.
+        if not isinstance(turn, dict):
+            continue
+        role = turn.get("role")
+        content = turn.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            cleaned.append({"role": role, "content": content.strip()})
+    cleaned = cleaned[-(MAX_HISTORY_TURNS * 2):]
+
+    # Enforce the character budget from the oldest end.
+    while cleaned:
+        total = sum(len(t["content"]) for t in cleaned)
+        if total <= MAX_HISTORY_CHARS:
+            break
+        cleaned.pop(0)
+    return cleaned
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -186,6 +219,7 @@ def build_prompt(
     query:   str,
     chunks:  list[RetrievedChunk],
     script:  str = "roman",
+    history: list[dict] | None = None,
 ) -> PromptPackage:
     """
     Constructs a complete PromptPackage from a query and retrieved chunks.
@@ -196,6 +230,8 @@ def build_prompt(
                  filtered by score_threshold and sorted by score desc.
         script:  Output of detect_script() on the *raw* query. Combined with
                  `query` (see _answer_language) this selects the answer language.
+        history: Optional prior turns for follow-up questions. Truncated to
+                 MAX_HISTORY_TURNS / MAX_HISTORY_CHARS and passed as chat turns.
 
     Returns:
         PromptPackage with system_prompt, user_prompt, context_chunks, query.
@@ -231,10 +267,15 @@ def build_prompt(
         user_prompt    = user_prompt,
         context_chunks = chunks,
         query          = query,
+        history        = _trim_history(history),
     )
 
 
-def build_no_result_prompt(query: str, script: str = "roman") -> PromptPackage:
+def build_no_result_prompt(
+    query: str,
+    script: str = "roman",
+    history: list[dict] | None = None,
+) -> PromptPackage:
     language = _answer_language(script, query)
     # A mixed query must not be answered with an English-only sentence, since
     # _SYSTEM_PROMPT_MIXED tells the model to match the query's language mix.
@@ -258,4 +299,5 @@ def build_no_result_prompt(query: str, script: str = "roman") -> PromptPackage:
         user_prompt    = user_prompt,
         context_chunks = [],
         query          = query,
+        history        = _trim_history(history),
     )
