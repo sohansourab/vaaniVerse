@@ -48,9 +48,17 @@ import httpx
 REPO = Path(__file__).resolve().parent.parent
 GOLD = Path(__file__).resolve().parent / "gold_qa.jsonl"
 
+# Offline mode imports the repo's own packages; make that work whether this is
+# run as `python eval/run_eval.py` or `python -m eval.run_eval`.
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
 TOP_K = 5
-PROD_THRESHOLD = 0.45  # the shipped default (core/config.py: SCORE_THRESHOLD)
+PROD_THRESHOLD = 0.45  # the *global* shipped default (core/config.py: SCORE_THRESHOLD)
 RANK_THRESHOLD = 0.0   # threshold disabled, to measure ranking quality alone
+
+# gold `language` → the script detect_script() reports, for the script-aware gate.
+_LANGUAGE_TO_SCRIPT = {"telugu": "telugu", "roman": "roman", "english": "roman"}
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -133,6 +141,62 @@ def call_search(client: httpx.Client, api: str, query: str,
     return response.json(), elapsed_ms
 
 
+class HttpSearcher:
+    """Retrieval through a running API (GET /search)."""
+
+    def __init__(self, client: httpx.Client, api: str):
+        self._client = client
+        self._api = api
+
+    def search(self, query: str, top_k: int, threshold: float) -> tuple[list[dict], float]:
+        payload, ms = call_search(self._client, self._api, query, top_k, threshold)
+        return payload.get("results", []), ms
+
+
+class OfflineSearcher:
+    """
+    Retrieval straight against the persisted index — no server, no HTTP.
+
+    This exists because the reranker/retrieval reruns kept being lost to a
+    uvicorn accept-loop fault: an in-process run has no socket to drop. Scripts
+    are normalized exactly as the API does, so the numbers stay comparable to a
+    live run for the retrieval layer.
+    """
+
+    def __init__(self, backend: str | None = None):
+        from ingestion.normalizer import detect_script, normalize
+        from retrieval.vector_store import VectorStore
+
+        self._normalize = normalize
+        self._detect = detect_script
+        self._store = VectorStore() if not backend else VectorStore(backend=backend)
+        self._store.load()
+
+    @property
+    def corpus_chunks(self) -> int:
+        return self._store.total_vectors
+
+    def search(self, query: str, top_k: int, threshold: float) -> tuple[list[dict], float]:
+        normalized = self._normalize(query, transliterate=True)
+        start = time.perf_counter()
+        chunks = self._store.query(
+            query_text      = normalized,
+            top_k           = top_k,
+            score_threshold = threshold,
+        )
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        results = [
+            {
+                "page_number":   c.metadata.get("page_number", "?"),
+                "score":         c.score,
+                "chunk_id":      c.chunk_id,
+                "retrieval_score": c.retrieval_score,
+            }
+            for c in chunks
+        ]
+        return results, elapsed_ms
+
+
 def call_query(client: httpx.Client, api: str, query: str,
                top_k: int, threshold: float) -> tuple[dict[str, Any], float, int]:
     start = time.perf_counter()
@@ -146,12 +210,14 @@ def call_query(client: httpx.Client, api: str, query: str,
 
 # ── collection phases ──────────────────────────────────────────────────────────
 
-def collect_retrieval(client: httpx.Client, api: str, gold: list[dict[str, Any]],
+def collect_retrieval(searcher, gold: list[dict[str, Any]],
                       top_k: int, threshold: float) -> list[dict[str, Any]]:
     rows = []
     for item in gold:
-        ranked, ms = call_search(client, api, item["query"], top_k, RANK_THRESHOLD)
-        gated, _ = call_search(client, api, item["query"], top_k, threshold)
+        ranked_results, ms = searcher.search(item["query"], top_k, RANK_THRESHOLD)
+        gated_results, _ = searcher.search(item["query"], top_k, threshold)
+        ranked = {"results": ranked_results}
+        gated = {"results": gated_results}
 
         pages = [r["page_number"] for r in ranked.get("results", [])]
         expected = set(item["expected_pages"])
@@ -233,6 +299,24 @@ def aggregate(retrieval_rows: list[dict[str, Any]], query_rows: list[dict[str, A
                                            for r in rows]), 4),
         }
 
+    # Script-aware gate: apply the per-script threshold from config to each row's
+    # top-1 score. This is what the API now does by default, so it is the number
+    # that actually reflects production behaviour.
+    try:
+        from core.config import threshold_for_script
+    except Exception:  # pragma: no cover - config import is trivial in practice
+        threshold_for_script = lambda _script: threshold
+
+    def _script_aware_pass(rows: list[dict[str, Any]]) -> float:
+        if not rows:
+            return 0.0
+        passed = sum(
+            1 for r in rows
+            if r["top_scores"]
+            and r["top_scores"][0] >= threshold_for_script(_LANGUAGE_TO_SCRIPT.get(r["language"], ""))
+        )
+        return round(passed / len(rows), 4)
+
     summary: dict[str, Any] = {
         "retrieval": {
             "n_queries": len(retrieval_rows),
@@ -250,6 +334,8 @@ def aggregate(retrieval_rows: list[dict[str, Any]], query_rows: list[dict[str, A
                 sum(1 for r in in_rows if r["passed_threshold"]) / len(in_rows), 4) if in_rows else 0.0,
             "gate_pass_rate_out_of_domain": round(
                 sum(1 for r in ood_rows if r["passed_threshold"]) / len(ood_rows), 4) if ood_rows else 0.0,
+            "script_aware_gate_pass_rate_in_corpus": _script_aware_pass(in_rows),
+            "script_aware_gate_pass_rate_out_of_domain": _script_aware_pass(ood_rows),
             "top1_score_in_corpus": distribution([r["top_scores"][0] for r in in_rows if r["top_scores"]]),
             "top1_score_out_of_domain": distribution([r["top_scores"][0] for r in ood_rows if r["top_scores"]]),
             "latency_ms": latency_summary([r["latency_ms"] for r in retrieval_rows]),
@@ -334,6 +420,10 @@ def main() -> int:
     parser.add_argument("--skip-query", action="store_true", help="Retrieval-only mode: skip LLM calls.")
     parser.add_argument("--from-results", type=Path, default=None,
                         help="Re-aggregate an existing results.json without any API calls.")
+    parser.add_argument("--offline", action="store_true",
+                        help="Run retrieval against the local index in-process (no API, "
+                             "no HTTP) and skip /query. Immune to the uvicorn accept-loop "
+                             "fault that lost earlier retrieval runs on Windows.")
     parser.add_argument("--out", type=Path, default=REPO / "eval" / "results.json")
     args = parser.parse_args()
 
@@ -362,6 +452,30 @@ def main() -> int:
             write_results_jsonl(gold, query_rows, args.out.with_suffix(".jsonl"))
         return 0
 
+    # ── offline retrieval-only run ────────────────────────────────────────────
+    if args.offline:
+        print(f"[offline] retrieval over {len(gold)} queries (top_k={args.top_k})...", flush=True)
+        try:
+            searcher = OfflineSearcher()
+        except Exception as exc:
+            print(f"ERROR: could not open the local index ({exc}). Ingest first.", file=sys.stderr)
+            return 2
+        if not searcher.corpus_chunks:
+            print("ERROR: index is empty — ingest a document first.", file=sys.stderr)
+            return 2
+        retrieval_rows = collect_retrieval(searcher, gold, args.top_k, args.threshold)
+        summary = aggregate(retrieval_rows, [], searcher.corpus_chunks, args.top_k,
+                            args.threshold, skipped=True)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8")
+        headline = {k: v for k, v in summary.items() if not k.endswith("_detail")}
+        print("\n" + "=" * 70)
+        print(json.dumps(headline, ensure_ascii=False, indent=2))
+        print("=" * 70)
+        print("wrote:", args.out)
+        return 0
+
     # ── live run ──────────────────────────────────────────────────────────────
     api = args.api_url.rstrip("/")
     # Reuse a single connection for the whole run. httpx would otherwise drop and
@@ -380,9 +494,10 @@ def main() -> int:
             print("ERROR: index is empty — ingest a document first.", file=sys.stderr)
             return 2
         corpus_chunks = int(health["total_vectors"])
+        searcher      = HttpSearcher(client, api)
 
         print(f"\n[1/2] retrieval over {len(gold)} queries (top_k={args.top_k})...", flush=True)
-        retrieval_rows = collect_retrieval(client, api, gold, args.top_k, args.threshold)
+        retrieval_rows = collect_retrieval(searcher, gold, args.top_k, args.threshold)
 
         query_rows: list[dict[str, Any]] = []
         if not args.skip_query:
